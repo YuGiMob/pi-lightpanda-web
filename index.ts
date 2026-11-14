@@ -31,13 +31,11 @@ function positiveNumber(value: unknown): number | undefined {
   return n > 0 ? n : undefined;
 }
 
-async function fetchDefaults(cwd: string | undefined, params: { timeoutMs?: unknown; maxChars?: unknown }) {
+async function fetchDefaults(cwd: string | undefined, params: { timeoutMs?: unknown }) {
   const timeoutParam = positiveNumber(params.timeoutMs);
-  const maxCharsParam = positiveNumber(params.maxChars);
   const defaults = await loadDefaultFetchSettings(cwd);
   return {
     timeoutMs: timeoutParam ?? defaults.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
-    maxChars: maxCharsParam ?? defaults.maxChars,
     allowPrivateAddresses: defaults.allowPrivateAddresses,
     allowLocalFiles: defaults.allowLocalFiles,
     allowRemotePdf: defaults.allowRemotePdf,
@@ -65,11 +63,6 @@ const WebSearchParams = Type.Object({
 
 const WebFetchParams = Type.Object({
   url: Type.String({ description: "URL of the page to fetch" }),
-  maxChars: Type.Optional(
-    Type.Number({
-      description: "Truncate the returned content to this many characters (default: no limit)",
-    }),
-  ),
   timeoutMs: Type.Optional(
     Type.Number({
       minimum: 1000,
@@ -140,7 +133,7 @@ export function createWebTools(deps: WebToolsDeps = {}) {
         "absolute, ~/ or ./ paths, including PDFs) are read directly. Remote PDFs are the one direct " +
         "network exception: they are downloaded with a DNS-pinned, policy-checked request and extracted " +
         "with MuPDF; set webFetch.allowRemotePdf: false to disable that exception. The result is cached " +
-        "and truncated with maxChars when given.",
+        "and returned in full.",
       promptGuidelines: [
         "web_fetch renders pages locally with Lightpanda; it never calls a third-party rendering service.",
       ],
@@ -159,7 +152,6 @@ export function createWebTools(deps: WebToolsDeps = {}) {
         const text = await fetchPageText(params.url, {
           timeoutMs: defaults.timeoutMs,
           signal: signal ?? undefined,
-          maxChars: defaults.maxChars,
           allowPrivateAddresses: defaults.allowPrivateAddresses,
           allowLocalFiles: defaults.allowLocalFiles,
           allowRemotePdf: defaults.allowRemotePdf,

@@ -67,37 +67,36 @@ describe("web_search tool", () => {
 });
 
 describe("web_fetch tool", () => {
-  it("fetches with url, maxChars and timeoutMs and reports progress", async () => {
+  it("fetches with url and timeoutMs and reports progress", async () => {
     const fetchPageText = vi.fn(async (_url: string, _options?: FetchPageOptions) => "body");
     const { webFetchTool } = createWebTools({ fetchPageText });
     const updates: string[] = [];
     const result = await webFetchTool.execute(
       "id",
-      { url: "https://example.com/", maxChars: 50, timeoutMs: 3000 },
+      { url: "https://example.com/", timeoutMs: 3000 },
       undefined,
       (update) => updates.push(firstText(update)),
       {} as never,
     );
     expect(fetchPageText).toHaveBeenCalledWith(
       "https://example.com/",
-      expect.objectContaining({ maxChars: 50, timeoutMs: 3000 }),
+      expect.objectContaining({ timeoutMs: 3000 }),
     );
     expect(result.content[0]).toMatchObject({ type: "text", text: "body" });
     expect(updates).toEqual(["Fetching https://example.com/..."]);
   });
 
-  it("drops non-positive option values and keeps the default timeout", async () => {
+  it("drops a non-positive timeout and keeps the default", async () => {
     const fetchPageText = vi.fn(async (_url: string, _options?: FetchPageOptions) => "body");
     const { webFetchTool } = createWebTools({ fetchPageText });
     await webFetchTool.execute(
       "id",
-      { url: "https://example.com/", maxChars: 0, timeoutMs: -5 },
+      { url: "https://example.com/", timeoutMs: -5 },
       undefined,
       undefined,
       {} as never,
     );
     const options = fetchPageText.mock.calls[0][1] as FetchPageOptions;
-    expect(options.maxChars).toBeUndefined();
     expect(options.timeoutMs).toBe(60000);
   });
 

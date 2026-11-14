@@ -28,7 +28,6 @@ afterEach(async () => {
 describe("fetch settings", () => {
   it("defaults both local-access flags to true and leaves limits unset", async () => {
     expect(await loadDefaultFetchSettings()).toEqual({
-      maxChars: undefined,
       timeoutMs: undefined,
       allowPrivateAddresses: true,
       allowLocalFiles: true,
@@ -42,8 +41,7 @@ describe("fetch settings", () => {
     await writeFile(
       join(agent, "settings.json"),
       JSON.stringify({
-        webFetch: { maxChars: 1000, timeoutMs: 5000, allowPrivateAddresses: false, allowLocalFiles: false },
-        piLightpanda: { maxChars: 2000 },
+        webFetch: { timeoutMs: 5000, allowPrivateAddresses: false, allowLocalFiles: false },
       }),
     );
     const cwd = join(root, "project");
@@ -53,7 +51,6 @@ describe("fetch settings", () => {
       JSON.stringify({ webFetch: { allowPrivateAddresses: true, timeoutMs: 9000 } }),
     );
     expect(await loadDefaultFetchSettings(cwd)).toEqual({
-      maxChars: 2000,
       timeoutMs: 9000,
       allowPrivateAddresses: true,
       allowLocalFiles: false,
@@ -61,15 +58,11 @@ describe("fetch settings", () => {
     });
   });
 
-  it("ignores invalid limits", async () => {
+  it("ignores an invalid timeout", async () => {
     const agent = join(root, "agent");
     await mkdir(agent, { recursive: true });
-    await writeFile(
-      join(agent, "settings.json"),
-      JSON.stringify({ webFetch: { maxChars: 0, timeoutMs: 10 } }),
-    );
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webFetch: { timeoutMs: 10 } }));
     const settings = await loadDefaultFetchSettings();
-    expect(settings.maxChars).toBeUndefined();
     expect(settings.timeoutMs).toBeUndefined();
   });
 });

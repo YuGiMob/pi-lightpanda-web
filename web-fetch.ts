@@ -8,7 +8,7 @@ import {
 } from "./lightpanda.ts";
 import { fetchRemotePdf, looksLikePdfUrl, type PdfFetchOutcome } from "./pdf-fetch.ts";
 import { parseLocalPath, readLocalFile } from "./local-file.ts";
-import { truncatePageText } from "./page-text.ts";
+import { pageText } from "./page-text.ts";
 import { normalizeUrlScheme, type WebsitePolicy } from "./web-access.ts";
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
@@ -21,9 +21,6 @@ export interface FetchPageOptions {
   nowMs?: () => number;
   signal?: AbortSignal;
   websitePolicy?: WebsitePolicy | null;
-  maxChars?: number;
-  maxBytes?: number;
-  maxPdfBytes?: number;
   allowPrivateAddresses?: boolean;
   allowLocalFiles?: boolean;
   allowRemotePdf?: boolean;
@@ -46,17 +43,17 @@ function failed(text: string): boolean {
 
 async function finishPdf(
   outcome: Exclude<PdfFetchOutcome, null>,
-  context: { url: string; useCache: boolean; now: () => number; maxChars?: number },
+  context: { url: string; useCache: boolean; now: () => number },
 ): Promise<string> {
   if ("error" in outcome) {
     if (context.useCache && !outcome.error.startsWith("Blocked:")) {
       const cached = await cachedFallback(context.url, context.now);
-      if (cached !== null) return truncatePageText(cached, context.maxChars);
+      if (cached !== null) return pageText(cached);
     }
     return outcome.error;
   }
   if (context.useCache) await setCached(context.url, outcome.text, "text/markdown");
-  return truncatePageText(outcome.text, context.maxChars);
+  return pageText(outcome.text);
 }
 
 async function cachedFallback(url: string, now: () => number): Promise<string | null> {
@@ -82,12 +79,7 @@ export async function fetchPageText(url: string, options: FetchPageOptions = {})
     const localPath = parseLocalPath(url);
     if (localPath !== null) {
       if (!localPath) return "Failed to read file: invalid file URL.";
-      return readLocalFile(localPath, {
-        signal: options.signal,
-        maxChars: options.maxChars,
-        maxBytes: options.maxBytes,
-        maxPdfBytes: options.maxPdfBytes,
-      });
+      return readLocalFile(localPath, { signal: options.signal });
     }
   }
   const normalized = normalizeUrlScheme(url);
@@ -111,9 +103,8 @@ export async function fetchPageText(url: string, options: FetchPageOptions = {})
     signal: options.signal,
     websitePolicy: options.websitePolicy ?? null,
     allowPrivateAddresses: options.allowPrivateAddresses,
-    maxPdfBytes: options.maxPdfBytes,
   };
-  const pdfContext = { url: normalized, useCache, now, maxChars: options.maxChars };
+  const pdfContext = { url: normalized, useCache, now };
   if (allowRemotePdf && looksLikePdfUrl(normalized)) {
     const outcome = await pdfFetcher(normalized, pdfOptions);
     if (outcome !== null) return finishPdf(outcome, pdfContext);
@@ -126,19 +117,19 @@ export async function fetchPageText(url: string, options: FetchPageOptions = {})
   if (text === null) {
     if (useCache) {
       const cached = await cachedFallback(normalized, now);
-      if (cached !== null) return truncatePageText(cached, options.maxChars);
+      if (cached !== null) return pageText(cached);
     }
     return LIGHTPANDA_MISSING;
   }
   if (failed(text)) {
     if (useCache && !text.startsWith("Blocked:")) {
       const cached = await cachedFallback(normalized, now);
-      if (cached !== null) return truncatePageText(cached, options.maxChars);
+      if (cached !== null) return pageText(cached);
     }
     return text;
   }
   if (useCache) await setCached(normalized, text, "text/markdown");
-  return truncatePageText(text, options.maxChars);
+  return pageText(text);
 }
 
-export { parseLocalPath, truncatePageText };
+export { parseLocalPath, pageText };

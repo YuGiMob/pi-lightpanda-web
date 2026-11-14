@@ -108,11 +108,6 @@ const MAX_RESULTS_PATHS: string[][] = [
   ["webSearch", "maxResults"],
 ];
 
-const FETCH_MAX_CHARS_PATHS: string[][] = [
-  ["piLightpanda", "maxChars"],
-  ["webFetch", "maxChars"],
-];
-
 const FETCH_TIMEOUT_PATHS: string[][] = [
   ["piLightpanda", "timeoutMs"],
   ["webFetch", "timeoutMs"],
@@ -237,29 +232,21 @@ async function loadFetchSetting(cwd: string | undefined, paths: string[][], vali
   return result;
 }
 
-export async function loadDefaultFetchMaxChars(cwd?: string): Promise<number | undefined> {
-  return loadFetchSetting(cwd, FETCH_MAX_CHARS_PATHS, (n) => n > 0);
-}
-
 export async function loadDefaultFetchTimeoutMs(cwd?: string): Promise<number | undefined> {
   return loadFetchSetting(cwd, FETCH_TIMEOUT_PATHS, (n) => n >= 1000);
 }
 
 export async function loadDefaultFetchSettings(cwd?: string): Promise<{
-  maxChars?: number;
   timeoutMs?: number;
   allowPrivateAddresses: boolean;
   allowLocalFiles: boolean;
   allowRemotePdf: boolean;
 }> {
-  let maxChars: number | undefined;
   let timeoutMs: number | undefined;
   let allowPrivateAddresses = true;
   let allowLocalFiles = true;
   let allowRemotePdf = true;
   for (const data of await settingsEntries(cwd)) {
-    const c = pickNumber(data, FETCH_MAX_CHARS_PATHS);
-    if (c !== undefined && c > 0) maxChars = c;
     const t = pickNumber(data, FETCH_TIMEOUT_PATHS);
     if (t !== undefined && t >= 1000) timeoutMs = t;
     const p = pickBoolean(data, ALLOW_PRIVATE_ADDRESSES_PATHS);
@@ -269,7 +256,7 @@ export async function loadDefaultFetchSettings(cwd?: string): Promise<{
     const r = pickBoolean(data, ALLOW_REMOTE_PDF_PATHS);
     if (r !== undefined) allowRemotePdf = r;
   }
-  return { maxChars, timeoutMs, allowPrivateAddresses, allowLocalFiles, allowRemotePdf };
+  return { timeoutMs, allowPrivateAddresses, allowLocalFiles, allowRemotePdf };
 }
 
 export async function loadLightpandaSettings(cwd?: string): Promise<{

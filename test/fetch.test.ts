@@ -28,15 +28,16 @@ afterEach(async () => {
 });
 
 describe("remote fetches", () => {
-  it("renders with Lightpanda and truncates at maxChars", async () => {
-    const { spawnImpl } = spawnRendering(PAGE + "<p>" + "padding ".repeat(200) + "</p>");
+  it("renders the full page without a character cap", async () => {
+    const padding = "padding ".repeat(200);
+    const { spawnImpl } = spawnRendering(PAGE + "<p>" + padding + "</p>");
     const out = await fetchPageText("https://example.com/doc", {
       spawn: spawnImpl,
       timeoutMs: 5000,
-      maxChars: 80,
     });
     expect(out).toContain("Stub Page");
-    expect(out).toContain("(truncated,");
+    expect(out).toContain(padding.trim());
+    expect(out).not.toContain("(truncated");
   });
 
   it("reports http errors", async () => {
@@ -68,18 +69,11 @@ describe("remote fetches", () => {
     expect(out).toBe("Remote PDF text");
   });
 
-  it("reports direct PDF failures and truncates PDF text", async () => {
+  it("reports direct PDF failures", async () => {
     const failing = vi.fn(async () => ({ error: "Failed to fetch URL: HTTP 404 Not Found" }));
     expect(await fetchPageText("https://example.com/doc.pdf", { pdfFetcher: failing, useCache: false })).toBe(
       "Failed to fetch URL: HTTP 404 Not Found",
     );
-    const long = vi.fn(async () => ({ text: "x".repeat(300) }));
-    const out = await fetchPageText("https://example.com/doc.pdf", {
-      pdfFetcher: long,
-      maxChars: 100,
-      useCache: false,
-    });
-    expect(out).toContain("(truncated, 300 chars total)");
   });
 
   it("reports a missing renderer", async () => {
@@ -219,18 +213,12 @@ describe("local files", () => {
     expect((await fetchPageText(dir, { timeoutMs: 5000 })).startsWith("Failed to read file:")).toBe(true);
   });
 
-  it("marks a file cut at the read cap", async () => {
+  it("reads local files in full without a cap", async () => {
     const file = join(dir, "big.txt");
-    await writeFile(file, "a".repeat(600));
-    const out = await fetchPageText(file, { maxBytes: 512, timeoutMs: 5000 });
-    expect(out).toContain("(file truncated at the read limit)");
-  });
-
-  it("truncates local files at maxChars", async () => {
-    const file = join(dir, "long.txt");
-    await writeFile(file, "x".repeat(300));
-    const out = await fetchPageText(file, { maxChars: 100, timeoutMs: 5000 });
-    expect(out).toContain("(truncated, 300 chars total)");
+    const content = "a".repeat(600);
+    await writeFile(file, content);
+    const out = await fetchPageText(file, { timeoutMs: 5000 });
+    expect(out).toBe(content);
   });
 
   it("refuses local files when disabled", async () => {

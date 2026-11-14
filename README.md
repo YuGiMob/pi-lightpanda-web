@@ -108,14 +108,15 @@ Use `/search-config` to enable or disable engines; Bing and Yahoo are available 
   itself does not support `file://`, so this is the only non-browser read path.
 - Results are cached for 1 hour (128 entries, 128 MiB); a stale entry from the last 24 hours is
   served when a render fails. The cache is never used for blocked URLs or local files.
-- `maxChars` truncates the returned text with a `... (truncated, N chars total)` notice.
 - Remote PDFs are the one direct-network exception. When a URL looks like a PDF (`.pdf`, `/pdf/`,
   or `format=pdf`) or Lightpanda reports `application/pdf`, `web_fetch` downloads it with a
   DNS-pinned, policy-checked, redirect-validated direct request and extracts it with MuPDF. The
-  downloader uses the same 10 MiB / 50-page limits, handles gzip/deflate/brotli, and sends a normal
-  browser User-Agent. Set `webFetch.allowRemotePdf: false` to disable the exception; PDFs then report
+  downloader has no page or byte cap, handles gzip/deflate/brotli, and sends a normal browser
+  User-Agent. Set `webFetch.allowRemotePdf: false` to disable the exception; PDFs then report
   `(PDF content cannot be read by the local renderer)` again. The PDF downloader uses a direct
   connection and does not apply proxy environment variables.
+- There is no character or page cap on `web_fetch` output. HTML, local files, and PDFs are returned in
+  full; the tool does not truncate them. Only `web_search` has a result-count limit (`maxResults`).
 
 ## Local and private access
 
@@ -142,14 +143,12 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 {
   "piLightpanda": {
     "maxResults": 5,
-    "maxChars": 50000,
     "timeoutMs": 60000,
     "allowPrivateAddresses": true,
     "allowLocalFiles": true,
     "allowRemotePdf": true
   },
   "webFetch": {
-    "maxChars": 50000,
     "timeoutMs": 60000,
     "allowPrivateAddresses": true,
     "allowLocalFiles": true,
@@ -170,7 +169,6 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 | Key | Default | Description |
 |---|---|---|
 | `piLightpanda.maxResults` / `webSearch.maxResults` | `5` | Default `maxResults` for `web_search` (clamped 1–20) |
-| `piLightpanda.maxChars` / `webFetch.maxChars` | tool param | Default `maxChars` for `web_fetch` |
 | `piLightpanda.timeoutMs` / `webFetch.timeoutMs` | `60000` fetch, `300000` search | Default `timeoutMs` when the tool param is absent (>= 1000) |
 | `piLightpanda.allowPrivateAddresses` / `webFetch.allowPrivateAddresses` | `true` | Set `false` to pass `--block-private-networks` and refuse localhost/LAN targets |
 | `piLightpanda.allowLocalFiles` / `webFetch.allowLocalFiles` | `true` | Set `false` to refuse `file://`, absolute, `~/`, and `./` paths |
@@ -204,9 +202,6 @@ Environment overrides:
 | Bot challenge | `Failed to render URL: the page served a bot challenge instead of content.` | Hard anti-bot walls cannot be bypassed by Lightpanda's honest user agent. |
 | HTTP failure | `Failed to fetch URL: HTTP 404 Not Found` | Fix the URL. |
 | Remote PDF disabled | `(PDF content cannot be read by the local renderer)` | Set `webFetch.allowRemotePdf: true`, or use a local PDF. |
-| PDF over the download cap | `(PDF content exceeds the download limit; not readable as text)` | Fetch a smaller PDF or use a local copy. |
-| Truncated PDF parse failure | `(PDF content could not be read as text; the download was truncated at the download limit)` | The download was cut at 10 MiB. |
-| maxChars cut | `... (truncated, N chars total)` | Raise `maxChars`. |
 | Cache fallback | `Served from cache` / `STALE cache from YYYY-MM-DD` | The render failed; output is the cached copy. |
 
 ## Development

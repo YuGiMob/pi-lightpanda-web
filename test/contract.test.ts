@@ -8,7 +8,7 @@ import {
   webSearch,
 } from "../web-search.ts";
 import { fetchPageText } from "../web-fetch.ts";
-import { truncatePageText } from "../page-text.ts";
+import { pageText } from "../page-text.ts";
 import { staleNotice } from "../cache.ts";
 import { checkUrlAccess } from "../web-access.ts";
 import { makeSpawn } from "./helpers.ts";
@@ -66,22 +66,11 @@ describe("fetch contract", () => {
   });
 
   it("reports empty pages", () => {
-    expect(truncatePageText("", 100)).toBe("(page returned no readable text)");
+    expect(pageText("")).toBe("(page returned no readable text)");
   });
 
-  it("marks maxChars truncation with the total", () => {
-    const out = truncatePageText("x".repeat(300), 100);
-    expect(out).toContain("(truncated, 300 chars total)");
-  });
-
-  it("does not split surrogate pairs at the maxChars boundary", () => {
-    const out = truncatePageText("😀".repeat(100), 149);
-    expect(out.indexOf("\n\n")).toBe(148);
-    expect(out).toContain("(truncated, 200 chars total)");
-  });
-
-  it("returns pages within the budget unchanged", () => {
-    expect(truncatePageText("hello", 1000)).toBe("hello");
+  it("returns non-empty pages unchanged", () => {
+    expect(pageText("hello")).toBe("hello");
   });
 
   it("reports a missing renderer", async () => {

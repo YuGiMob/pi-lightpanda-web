@@ -5,15 +5,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pagePrefixedMarkdown } from "./html-to-md.ts";
 import { extractPdfText } from "./pdf.ts";
-import { truncatePageText } from "./page-text.ts";
+import { pageText } from "./page-text.ts";
 
-const MAX_TEXT_BYTES = 512 * 1024;
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const BINARY_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f\ufffd]/g;
 const MIN_BINARY_CHARS = 16;
 const BINARY_CHAR_DIVISOR = 8;
-const TRUNCATED_FILE_SUFFIX = "... (file truncated at the read limit)";
-const TRUNCATED_FILE_NOTICE = "\n\n" + TRUNCATED_FILE_SUFFIX;
 const UTF32_LE_BOM = Buffer.from([0xff, 0xfe, 0x00, 0x00]);
 const UTF32_BE_BOM = Buffer.from([0x00, 0x00, 0xfe, 0xff]);
 const UTF16_LE_BOM = Buffer.from([0xff, 0xfe]);
@@ -50,10 +46,6 @@ function localFileContentType(filePath: string): string {
 
 function looksBinary(text: string): boolean {
   return (text.match(BINARY_CHAR_RE) ?? []).length > Math.max(MIN_BINARY_CHARS, Math.floor(text.length / BINARY_CHAR_DIVISOR));
-}
-
-function withTruncation(text: string, truncated: boolean): string {
-  return truncated ? text + TRUNCATED_FILE_NOTICE : text;
 }
 
 function hasPdfMagic(data: Buffer): boolean {
@@ -100,7 +92,7 @@ function decodeLocalText(bytes: Buffer): string {
 
 export async function readLocalFile(
   filePath: string,
-  options: { signal?: AbortSignal; maxChars?: number; maxBytes?: number; maxPdfBytes?: number },
+  options: { signal?: AbortSignal },
 ): Promise<string> {
   if (options.signal?.aborted) return "Failed to read file: cancelled.";
   let handle: FileHandle;
@@ -112,37 +104,30 @@ export async function readLocalFile(
   try {
     const stats = await handle.stat();
     if (stats.isDirectory()) return `Failed to read file: ${filePath} is a directory.`;
-    const maxBytes = options.maxBytes ?? MAX_TEXT_BYTES;
-    const maxPdfBytes = options.maxPdfBytes ?? MAX_PDF_BYTES;
-    const length = Math.min(stats.size, Math.max(maxBytes, maxPdfBytes));
-    const buffer = Buffer.alloc(Number(length));
+    const buffer = Buffer.alloc(Number(stats.size));
     let read = 0;
-    while (read < length) {
-      const { bytesRead } = await handle.read(buffer, read, length - read, read);
+    while (read < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
       if (!bytesRead) break;
       read += bytesRead;
     }
     if (options.signal?.aborted) return "Failed to read file: cancelled.";
-    const head = read < length ? buffer.subarray(0, read) : buffer;
-    const isPdf = hasPdfMagic(head);
-    const limit = isPdf ? maxPdfBytes : maxBytes;
-    const truncated = stats.size > limit;
-    const body = head.length > limit ? head.subarray(0, limit) : head;
-    if (isPdf) {
+    const body = read < buffer.length ? buffer.subarray(0, read) : buffer;
+    if (hasPdfMagic(body)) {
       let pdfText: string;
       try {
         pdfText = await extractPdfText(body);
       } catch {
-        return withTruncation("(PDF content could not be read as text)", truncated);
+        return "(PDF content could not be read as text)";
       }
       if (!pdfText) pdfText = "(PDF contains no extractable text)";
-      return truncatePageText(withTruncation(pdfText, truncated), options.maxChars);
+      return pageText(pdfText);
     }
     const text = decodeLocalText(body);
     if (looksBinary(text)) return `(binary content, ${body.length} bytes; not readable as text)`;
     const contentType = localFileContentType(filePath);
     const rendered = contentType.includes("html") ? pagePrefixedMarkdown(text) : text.trim();
-    return truncatePageText(withTruncation(rendered, truncated), options.maxChars);
+    return pageText(rendered);
   } finally {
     await handle.close().catch(() => {});
   }

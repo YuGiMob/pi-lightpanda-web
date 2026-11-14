@@ -42,12 +42,6 @@ beforeEach(async () => {
       response.end();
       return;
     }
-    if (url.pathname === "/big.pdf") {
-      const body = makePdf(["x".repeat(1000)]);
-      response.writeHead(200, { "content-type": "application/pdf", "content-length": String(body.length) });
-      response.end(body);
-      return;
-    }
     if (url.pathname === "/slow.pdf") return;
     response.writeHead(404, { "content-type": "text/html" });
     response.end("not found");
@@ -114,17 +108,6 @@ describe("fetchRemotePdf", () => {
       allowPrivateAddresses: true,
     });
     expect("error" in outcome! && outcome.error).toBe("Failed to fetch URL: HTTP 404 Not Found");
-  });
-
-  it("enforces the PDF download limit", async () => {
-    const outcome = await fetchRemotePdf(`${base}/big.pdf`, {
-      timeoutMs: 5000,
-      allowPrivateAddresses: true,
-      maxPdfBytes: 256,
-    });
-    expect("error" in outcome! && outcome.error).toBe(
-      "(PDF content exceeds the download limit; not readable as text)",
-    );
   });
 
   it("enforces the website policy on redirects", async () => {

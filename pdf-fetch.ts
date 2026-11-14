@@ -14,15 +14,12 @@ import {
   type WebsitePolicy,
 } from "./web-access.ts";
 
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
-const MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
 const MAX_REQUESTS = 5;
 const MAX_DNS_ATTEMPTS = 2;
 const DNS_RETRY_BACKOFF_MS = 250;
 const PDF_USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const PDF_MAGIC = Buffer.from("%PDF-");
-const TRUNCATED_BODY_NOTICE = "\n\n... (page truncated at the download limit)";
 const CANCELLED_MESSAGE = "Failed to fetch URL: cancelled.";
 const TIMEOUT_MESSAGE = "Failed to fetch URL: timed out.";
 const TRANSIENT_DNS_ERROR_CODES = new Set([
@@ -58,7 +55,6 @@ export interface PdfHopOptions {
   pinnedIp: string;
   family: number;
   headers: Record<string, string>;
-  maxBytes: number;
   inactivityMs: number;
   deadlineMs: number;
   nowMs?: () => number;
@@ -69,7 +65,6 @@ export interface PdfHopResponse {
   status: number;
   headers: Record<string, string | string[] | undefined>;
   body: Buffer;
-  truncated: boolean;
   encoding: string;
 }
 
@@ -85,7 +80,6 @@ export interface PdfFetchOptions {
   signal?: AbortSignal;
   websitePolicy?: WebsitePolicy | null;
   allowPrivateAddresses?: boolean;
-  maxPdfBytes?: number;
   seams?: PdfFetchSeams;
 }
 
@@ -215,17 +209,17 @@ function decodeBody(body: Buffer, encoding: string): Buffer {
   if (!encoding) return body;
   try {
     if (encoding === "gzip" || encoding === "x-gzip") {
-      return gunzipSync(body, { maxOutputLength: MAX_DECOMPRESSED_BYTES });
+      return gunzipSync(body);
     }
     if (encoding === "deflate") {
       try {
-        return inflateSync(body, { maxOutputLength: MAX_DECOMPRESSED_BYTES });
+        return inflateSync(body);
       } catch {
-        return inflateRawSync(body, { maxOutputLength: MAX_DECOMPRESSED_BYTES });
+        return inflateRawSync(body);
       }
     }
     if (encoding === "br") {
-      return brotliDecompressSync(body, { maxOutputLength: MAX_DECOMPRESSED_BYTES });
+      return brotliDecompressSync(body);
     }
   } catch {
     return body;
@@ -299,8 +293,6 @@ function requestPdfHop(options: PdfHopOptions): Promise<PdfHopResponse> {
     requestRef = transport.request(requestOptions, (response: IncomingMessage) => {
       responseRef = response;
       const chunks: Buffer[] = [];
-      let total = 0;
-      let truncated = false;
       const encoding = String(response.headers["content-encoding"] ?? "")
         .split(",", 1)[0]
         .trim()
@@ -311,23 +303,12 @@ function requestPdfHop(options: PdfHopOptions): Promise<PdfHopResponse> {
             status: response.statusCode ?? 0,
             headers: response.headers as Record<string, string | string[] | undefined>,
             body: Buffer.concat(chunks),
-            truncated,
             encoding,
           }),
         );
       response.on("data", (chunk: Buffer) => {
         if (settled) return;
-        if (total + chunk.length > options.maxBytes) {
-          const take = chunk.subarray(0, options.maxBytes - total);
-          chunks.push(take);
-          total += take.length;
-          truncated = true;
-          finishResponse();
-          response.destroy();
-          return;
-        }
         chunks.push(chunk);
-        total += chunk.length;
       });
       response.on("end", () => finishResponse());
       response.on("aborted", () => finish(() => reject(new Error("response aborted"))));
@@ -356,7 +337,6 @@ export async function fetchRemotePdf(
   const signal = options.signal;
   const policy = options.websitePolicy ?? null;
   const allowPrivateAddresses = options.allowPrivateAddresses ?? true;
-  const maxPdfBytes = options.maxPdfBytes ?? MAX_PDF_BYTES;
   const resolve = options.seams?.resolve ?? resolveAndValidateHost;
   const request = options.seams?.request ?? requestPdfHop;
   let currentUrl = url;
@@ -378,7 +358,6 @@ export async function fetchRemotePdf(
           pinnedIp: candidate.ip,
           family: candidate.family,
           headers: {},
-          maxBytes: maxPdfBytes,
           inactivityMs: Math.max(1, deadline - now()),
           deadlineMs: deadline,
           nowMs: now,
@@ -411,26 +390,16 @@ export async function fetchRemotePdf(
     if (response.status !== 200) return { error: statusError(response.status) };
     const contentType = headerValue(response.headers, "content-type").toLowerCase();
     const declaredPdf = contentType.includes("pdf");
-    const declaredLength = Number(headerValue(response.headers, "content-length"));
-    if (declaredPdf && !response.encoding && Number.isFinite(declaredLength) && declaredLength > maxPdfBytes) {
-      return { error: "(PDF content exceeds the download limit; not readable as text)" };
-    }
-    const decoded = decodeBody(response.body, response.encoding);
-    const truncated = response.truncated || decoded.length > maxPdfBytes;
-    const body = decoded.length > maxPdfBytes ? decoded.subarray(0, maxPdfBytes) : decoded;
+    const body = decodeBody(response.body, response.encoding);
     if (!declaredPdf && !hasPdfMagic(body)) return null;
     let pdfText: string;
     try {
       pdfText = await extractPdfText(body);
     } catch {
-      return {
-        error: truncated
-          ? "(PDF content could not be read as text; the download was truncated at the download limit)"
-          : "(PDF content could not be read as text)",
-      };
+      return { error: "(PDF content could not be read as text)" };
     }
     if (!pdfText) return { error: "(PDF contains no extractable text)" };
-    return { text: truncated ? pdfText + TRUNCATED_BODY_NOTICE : pdfText };
+    return { text: pdfText };
   }
   return { error: "Failed to fetch URL: too many redirects." };
 }

@@ -1,9 +1,6 @@
 import { createRequire } from "node:module";
 import { inflateSync } from "node:zlib";
 
-export const MAX_WEB_PDF_PAGES = 50;
-const MAX_PDF_INFLATE_BYTES = 64 * 1024 * 1024;
-
 export class PdfParseError extends Error {
   constructor() {
     super("pdf parse failed");
@@ -548,10 +545,9 @@ export async function extractPdfPages(
   try {
     if (doc.needsPassword()) throw new PdfParseError();
     const total = doc.countPages();
-    const count = Math.min(total, MAX_WEB_PDF_PAGES);
     const pages: PageData[] = [];
     const heights: number[] = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < total; i++) {
       const page = doc.loadPage(i);
       const bounds = page.getBounds();
       heights.push(bounds[3] - bounds[1]);
@@ -590,35 +586,21 @@ export async function extractPdfPages(
   }
 }
 
-function assemblePages(
-  pages: { text: string; pageNumber: number }[],
-  pageLimitOverride?: boolean,
-): string {
+function assemblePages(pages: { text: string; pageNumber: number }[]): string {
   const parts: string[] = [];
-  const pageLimitReached = pageLimitOverride ?? pages.length > MAX_WEB_PDF_PAGES;
   for (const page of pages) {
-    const pageText = page.text.trim();
-    if (!pageText) continue;
-    parts.push((parts.length ? "\n\n" : "") + `## Page ${page.pageNumber}\n\n${pageText}`);
+    const text = page.text.trim();
+    if (!text) continue;
+    parts.push((parts.length ? "\n\n" : "") + `## Page ${page.pageNumber}\n\n${text}`);
   }
-  let text = parts.join("").trimEnd();
-  if (!text) {
-    if (pageLimitReached) {
-      return `(PDF contains no extractable text in the first ${MAX_WEB_PDF_PAGES} pages)`;
-    }
-    return "";
-  }
-  if (pageLimitReached) {
-    text += `\n\n... (PDF extraction is capped at ${MAX_WEB_PDF_PAGES} pages)`;
-  }
-  return text;
+  return parts.join("").trimEnd();
 }
 
 export async function extractPdfText(data: Buffer): Promise<string> {
   const mupdf = await loadMupdf();
   if (!mupdf) return extractPdfTextFallback(data);
-  const { pages, totalPages } = await extractPdfPages(data);
-  return assemblePages(pages, totalPages > MAX_WEB_PDF_PAGES);
+  const { pages } = await extractPdfPages(data);
+  return assemblePages(pages);
 }
 
 function extractTextOps(bytes: Buffer): string {
@@ -787,7 +769,7 @@ async function extractPdfTextFallback(data: Buffer): Promise<string> {
     let bytes = raw;
     if (isFlate) {
       try {
-        bytes = inflateSync(raw, { maxOutputLength: MAX_PDF_INFLATE_BYTES });
+        bytes = inflateSync(raw);
       } catch {
         continue;
       }
@@ -795,10 +777,9 @@ async function extractPdfTextFallback(data: Buffer): Promise<string> {
     streams.push(bytes);
   }
   if (!streams.length) throw new PdfParseError();
-  const totalPages = streams.length;
-  const pages = streams.slice(0, MAX_WEB_PDF_PAGES).map((stream, i) => ({
+  const pages = streams.map((stream, i) => ({
     text: extractTextOps(stream),
     pageNumber: i + 1,
   }));
-  return assemblePages(pages, totalPages > MAX_WEB_PDF_PAGES);
+  return assemblePages(pages);
 }

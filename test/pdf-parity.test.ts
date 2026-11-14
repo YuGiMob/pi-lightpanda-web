@@ -286,3 +286,16 @@ describe("running header and footer stripping", () => {
     expect(out).not.toContain("Confidential draft");
   });
 });
+
+describe("page coverage", () => {
+  it("extracts every page without a page cap", async () => {
+    const pages = Array.from({ length: 60 }, (_, i) => [
+      { text: `Unique page marker ${i + 1}.`, y: 600 },
+    ]);
+    const out = await extractPdfText(makePdf(pages));
+    expect(out).toContain("## Page 1");
+    expect(out).toContain("## Page 60");
+    expect(out).toContain("Unique page marker 60");
+    expect(out).not.toContain("capped");
+  });
+});

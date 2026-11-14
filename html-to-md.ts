@@ -1165,7 +1165,6 @@ export function htmlToMarkdown(sourceHtml: string, mainContent = false): string 
 }
 
 const NON_DOCUMENT_TITLE_TAGS = new Set(["math", "noscript", "svg", "template"]);
-const META_VALUE_MAX_CHARS = 300;
 
 export interface PageMeta {
   title: string;
@@ -1188,18 +1187,6 @@ const META_KEYS: Record<string, keyof PageMeta> = Object.assign(Object.create(nu
   description: "description",
   "og:description": "description",
 });
-
-function cutAtCharBoundary(text: string, maxChars: number): string {
-  const sliced = text.slice(0, maxChars);
-  if (!sliced) return sliced;
-  const last = sliced.charCodeAt(sliced.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) return sliced.slice(0, -1);
-  if (last >= 0xdc00 && last <= 0xdfff) {
-    const prev = sliced.length >= 2 ? sliced.charCodeAt(sliced.length - 2) : 0;
-    if (prev < 0xd800 || prev > 0xdbff) return sliced.slice(0, -1);
-  }
-  return sliced;
-}
 
 function extractPageTitle(html: string): string {
   let inTitle = false;
@@ -1241,11 +1228,6 @@ function extractPageTitle(html: string): string {
   return collapseWhitespace(parts.join(""));
 }
 
-function capMetaValue(value: string): string {
-  if (value.length <= META_VALUE_MAX_CHARS) return value;
-  return cutAtCharBoundary(value, META_VALUE_MAX_CHARS);
-}
-
 export function extractPageMeta(html: string): PageMeta {
   const meta: PageMeta = { title: extractPageTitle(html), author: "", date: "", site: "", description: "" };
   const seen = new Set<string>();
@@ -1256,7 +1238,7 @@ export function extractPageMeta(html: string): PageMeta {
     if (!key || !content || seen.has(key)) return;
     seen.add(key);
     const field = META_KEYS[key];
-    if (field && !meta[field]) meta[field] = capMetaValue(content);
+    if (field && !meta[field]) meta[field] = content;
   };
   feedHtml(html, {
     handleStartTag(name: string, attrs: AttrDict) {

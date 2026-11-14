@@ -15,7 +15,6 @@ import { proxyForUrl } from "./proxy.ts";
 const DEFAULT_BINARY = "lightpanda";
 const DEFAULT_WAIT_UNTIL = "networkidle";
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_DUMP_BYTES = 16 * 1024 * 1024;
 const PROBE_TIMEOUT_MS = 5_000;
 const METADATA_LINE_RE = /^(?:Title|Author|Date|Site|URL|Rendered via): /;
 const PROVENANCE = "Rendered via Lightpanda (local browser; nothing sent to a third party).";
@@ -86,7 +85,6 @@ interface RunResult {
   stderr: string;
   timedOut: boolean;
   cancelled: boolean;
-  truncated: boolean;
   missing: boolean;
 }
 
@@ -149,9 +147,7 @@ function runLightpanda(
       stderr: [] as string[],
       timedOut: false,
       cancelled: false,
-      truncated: false,
       missing: false,
-      bytes: 0,
     };
     let settled = false;
     const finish = (error: Error | null) => {
@@ -189,19 +185,7 @@ function runLightpanda(
         for await (const chunk of stream) push(chunk);
       } catch {}
     };
-    const stdoutDone = collect(child.stdout, (chunk) => {
-      if (state.bytes >= MAX_DUMP_BYTES) {
-        state.truncated = true;
-        return;
-      }
-      state.bytes += chunk.length;
-      if (state.bytes > MAX_DUMP_BYTES) {
-        state.truncated = true;
-        state.stdout.push(chunk.subarray(0, chunk.length - (state.bytes - MAX_DUMP_BYTES)));
-        return;
-      }
-      state.stdout.push(chunk);
-    });
+    const stdoutDone = collect(child.stdout, (chunk) => state.stdout.push(chunk));
     const stderrDone = collect(child.stderr, (chunk) => state.stderr.push(chunk.toString("utf-8")));
     child.on("error", (error) => finish(error));
     child.on("close", (code) => {
@@ -224,7 +208,6 @@ function failureFor(result: RunResult): string | null {
   if (result.missing) return null;
   if (result.cancelled) return CANCELLED_MESSAGE;
   if (result.timedOut) return TIMED_OUT_MESSAGE;
-  if (result.truncated) return "Failed to render URL: the page exceeded the local renderer's dump limit.";
   return null;
 }
 
@@ -311,8 +294,6 @@ function renderArgs(
     options.waitUntil ?? DEFAULT_WAIT_UNTIL,
     "--http-timeout",
     String(timeoutMs),
-    "--dump-max-bytes",
-    String(MAX_DUMP_BYTES),
   ];
   if (options.allowPrivateAddresses === false) args.push("--block-private-networks");
   try {
