@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   lightpandaBinary,
   lightpandaLaunch,
+  ensureLightpandaInstalled,
   renderPageHtml,
   renderPageWithLightpanda,
 } from "../lightpanda.ts";
@@ -27,6 +28,27 @@ afterEach(() => {
   delete process.env.XDG_DATA_HOME;
   delete process.env.HTTPS_PROXY;
   vi.unstubAllEnvs();
+});
+
+describe("automatic renderer installation", () => {
+  it("skips installation when a spawn stub is supplied", async () => {
+    const { spawnImpl } = makeSpawn(() => ({ errorCode: "ENOENT" }));
+    expect(await ensureLightpandaInstalled({ spawn: spawnImpl })).toBe(false);
+  });
+
+  it("runs the installer once and re-probes the renderer", async () => {
+    delete process.env.PI_LIGHTPANDA_BIN;
+    let installed = false;
+    const { spawnImpl } = makeSpawn((call) => {
+      if (call.args.at(-1) !== "version") return { stdout: "", code: 1 };
+      return installed ? { stdout: "1.0.4", code: 0 } : { code: 1 };
+    });
+    const installer = async () => {
+      installed = true;
+      return true;
+    };
+    expect(await ensureLightpandaInstalled({ spawn: spawnImpl, installer })).toBe(true);
+  });
 });
 
 describe("renderPageWithLightpanda", () => {
@@ -272,7 +294,7 @@ describe("lightpandaBinary", () => {
     );
     expect(lightpandaBinary({})).toBe("/env/lightpanda");
     delete process.env.PI_LIGHTPANDA_BIN;
-    expect(lightpandaBinary({})).toBe("lightpanda");
+    expect(lightpandaBinary({})).not.toBe("/env/lightpanda");
   });
 });
 

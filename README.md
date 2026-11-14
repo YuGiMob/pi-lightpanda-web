@@ -18,9 +18,10 @@ direct downloader fetches them for MuPDF extraction, and it can be disabled.
 ## Requirements
 
 - Node.js >= 22.19.0.
-- A Lightpanda binary (1.0.x recommended). `bash scripts/install-lightpanda.sh` downloads the newest
-  stable release and writes `webRender.lightpandaPath` into the global pi settings. Set
-  `PI_LIGHTPANDA_BIN` or `webRender.lightpandaPath` / `webRender.lightpandaCommand` to use your own.
+- A Lightpanda binary. The extension checks at `session_start` and, when no renderer is configured,
+  runs `scripts/install-lightpanda.sh` in the background; the first tool call waits for that
+  install. There is no postinstall. Set `PI_LIGHTPANDA_BIN` or `webRender.lightpandaPath` /
+  `webRender.lightpandaCommand` to use your own binary and suppress the automatic install.
 - Optional: `mupdf` for the full PDF engine. Without it, PDF extraction falls back to a limited regular-expression extractor.
 
 ## Install
@@ -37,12 +38,28 @@ unique `-web` name. Either way, add the path (or package name) to the `packages`
 
 ```sh
 npm install
+```
+
+The extension downloads Lightpanda automatically at the next Pi startup. To pre-install it
+yourself, run:
+
+```sh
 bash scripts/install-lightpanda.sh
 ```
 
+### Automatic renderer installation
+
+At `session_start`, the extension checks whether a runnable Lightpanda is already available. If
+none is configured, it runs `scripts/install-lightpanda.sh --no-configure` in the background; the
+first `web_fetch` or `web_search` call waits for the same install rather than racing it. There is no
+postinstall and no bundled binary.
+
+Explicit configuration is respected and suppresses auto-install: `PI_LIGHTPANDA_BIN`,
+`webRender.lightpandaPath`, `webRender.lightpandaCommand`, or `webRender.lightpandaEnabled: false`.
 The installer supports Linux (glibc; musl needs a source build), macOS, and Windows through WSL2.
-On Linux it can bundle a newer glibc into the install directory when the system one is too old, so
-Lightpanda 1.0.x runs without touching system libraries.
+Native Windows has no Lightpanda binary. On Linux the installer can bundle a newer glibc into the
+install directory when the system one is too old, so Lightpanda 1.0.x runs without touching system
+libraries.
 
 ## Tools
 

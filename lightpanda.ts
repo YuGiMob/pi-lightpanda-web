@@ -2,6 +2,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { STATUS_CODES } from "node:http";
 import { pagePrefixedMarkdown, visibleChars } from "./html-to-md.ts";
 import {
@@ -102,6 +103,7 @@ type DumpOutcome =
   | null;
 
 const availability = new Map<string, Promise<boolean>>();
+let installPromise: Promise<boolean> | null = null;
 
 function binaryAvailable(launch: string[], spawn: LightpandaSpawn): Promise<boolean> {
   const key = launch.join(" ");
@@ -279,6 +281,65 @@ export function lightpandaLaunch(options: LightpandaRenderOptions = {}): string[
   return [lightpandaBinary(options)];
 }
 
+function runInstaller(): Promise<boolean> {
+  const script = fileURLToPath(new URL("./scripts/install-lightpanda.sh", import.meta.url));
+  if (!existsSync(script)) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let child: ReturnType<typeof spawnProcess> | null = null;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child?.kill("SIGKILL");
+      } catch {}
+      finish(false);
+    }, 10 * 60 * 1000);
+    try {
+      child = spawnProcess("bash", [script, "--no-configure"], { stdio: "ignore" });
+    } catch {
+      finish(false);
+      return;
+    }
+    child.on("error", () => finish(false));
+    child.on("close", (code) => finish(code === 0));
+    child.unref();
+  });
+}
+
+export interface EnsureLightpandaOptions extends LightpandaRenderOptions {
+  installer?: () => Promise<boolean>;
+}
+
+export async function ensureLightpandaInstalled(options: EnsureLightpandaOptions = {}): Promise<boolean> {
+  if (options.settings && options.settings.enabled === false) return false;
+  const spawn = options.spawn ?? (spawnProcess as unknown as LightpandaSpawn);
+  if (options.command || options.settings?.command) {
+    return binaryAvailable(lightpandaLaunch(options), spawn);
+  }
+  if (options.binaryPath || options.settings?.binaryPath || process.env.PI_LIGHTPANDA_BIN?.trim()) {
+    return binaryAvailable(lightpandaLaunch(options), spawn);
+  }
+  if (process.platform === "win32" || (options.spawn && !options.installer)) {
+    return binaryAvailable(lightpandaLaunch(options), spawn);
+  }
+  if (installPromise) return installPromise;
+  installPromise = (async () => {
+    if (await binaryAvailable(lightpandaLaunch(options), spawn)) return true;
+    const install = options.installer ?? runInstaller;
+    if (!(await install())) return false;
+    availability.clear();
+    return binaryAvailable(lightpandaLaunch(options), spawn);
+  })().finally(() => {
+    installPromise = null;
+  });
+  return installPromise;
+}
+
 function renderArgs(
   normalized: string,
   options: LightpandaRenderOptions,
@@ -316,9 +377,9 @@ async function fetchDump(
   const normalized = normalizeUrlScheme(target);
   const access = checkUrlAccess(normalized, policy);
   if (!access[0]) return { ok: false, message: access[1] };
-  const launch = lightpandaLaunch(options);
   const spawn = options.spawn ?? (spawnProcess as unknown as LightpandaSpawn);
-  if (!(await binaryAvailable(launch, spawn))) return null;
+  if (!(await ensureLightpandaInstalled({ ...options, spawn }))) return null;
+  const launch = lightpandaLaunch(options);
   const timeoutMs = Math.min(
     MAX_SIGNAL_TIMEOUT_MS,
     Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)),

@@ -4,6 +4,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { openSearchConfig } from "./search-config.ts";
 import { collapseWhitespace } from "./html-to-md.ts";
 import { SEARCH_TIMEOUT_MS, webSearch as defaultWebSearch } from "./web-search.ts";
+import { ensureLightpandaInstalled } from "./lightpanda.ts";
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
   fetchPageText as defaultFetchPageText,
@@ -165,6 +166,11 @@ export function createWebTools(deps: WebToolsDeps = {}) {
 
 export default function (pi: ExtensionAPI) {
   const { webSearchTool, webFetchTool } = createWebTools();
+  pi.on("session_start", async (_event, ctx) => {
+    const settings = await loadLightpandaSettings(ctx.cwd).catch(() => null);
+    if (!settings || settings.enabled === false) return;
+    void ensureLightpandaInstalled({ settings }).catch(() => {});
+  });
   pi.registerTool(webSearchTool);
   pi.registerTool(webFetchTool);
   pi.registerCommand("search-config", {

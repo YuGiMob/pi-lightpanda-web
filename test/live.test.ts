@@ -1,13 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { visibleChars } from "../html-to-md.ts";
-import { lightpandaLaunch, renderPageHtml } from "../lightpanda.ts";
+import { lightpandaBinary, lightpandaLaunch, renderPageHtml } from "../lightpanda.ts";
 import { searchSweep } from "../web-search.ts";
 import { fetchPageText } from "../web-fetch.ts";
 
 const enabled = process.env.PI_LIGHTPANDA_E2E === "1";
 const binary =
-  process.env.PI_LIGHTPANDA_E2E_BIN?.trim() || process.env.PI_LIGHTPANDA_BIN?.trim() || "lightpanda";
+  process.env.PI_LIGHTPANDA_E2E_BIN?.trim() || process.env.PI_LIGHTPANDA_BIN?.trim() || lightpandaBinary({});
 
 describe.skipIf(!enabled || process.platform === "win32")("lightpanda (live)", () => {
   const launch = lightpandaLaunch({ binaryPath: binary });

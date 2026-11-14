@@ -34,7 +34,7 @@ describe("extension registration", () => {
     const harness = makeHarness();
     expect(harness.tools).toEqual(["web_search", "web_fetch"]);
     expect(harness.commands).toEqual(["search-config"]);
-    expect(harness.handlers).toEqual([]);
+    expect(harness.handlers).toEqual(["session_start"]);
   });
 });
 
