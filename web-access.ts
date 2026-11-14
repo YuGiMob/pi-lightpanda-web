@@ -111,6 +111,70 @@ function compressGroups(groups: string[]): string {
   return `${head.join(":")}::${tail.join(":")}`;
 }
 
+export function stripIpv6Brackets(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
+
+const PCP_ANYCAST = new Set(["2001:1::1", "2001:1::2"]);
+
+function isPcpAnycast(lower: string): boolean {
+  try {
+    return PCP_ANYCAST.has(compressIpv6(lower));
+  } catch {
+    return false;
+  }
+}
+
+function ipv4Octets(ip: string): number[] | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+  return octets;
+}
+
+export function isPublicIp(ip: string): boolean {
+  if (ip.includes("%")) return false;
+  if (ip.includes(".") && ip.includes(":")) return false;
+  if (ip.includes(".")) {
+    const o = ipv4Octets(ip);
+    if (!o) return false;
+    if (o[0] === 0) return false;
+    if (o[0] === 10) return false;
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return false;
+    if (o[0] === 127) return false;
+    if (o[0] === 169 && o[1] === 254) return false;
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return false;
+    if (o[0] === 192 && o[1] === 0 && o[2] === 0) return false;
+    if (o[0] === 192 && o[1] === 0 && o[2] === 2) return false;
+    if (o[0] === 192 && o[1] === 88 && o[2] === 99) return false;
+    if (o[0] === 192 && o[1] === 168) return false;
+    if (o[0] === 198 && (o[1] === 18 || o[1] === 19)) return false;
+    if (o[0] === 198 && o[1] === 51 && o[2] === 100) return false;
+    if (o[0] === 203 && o[1] === 0 && o[2] === 113) return false;
+    if (o[0] >= 224) return false;
+    return true;
+  }
+  let canonical: string;
+  try {
+    canonical = compressIpv6(ip);
+  } catch {
+    return false;
+  }
+  if (canonical === "::1" || canonical.startsWith("::")) return false;
+  if (canonical.startsWith("fc") || canonical.startsWith("fd")) return false;
+  if (/^fe[89a-f][0-9a-f]:/.test(canonical)) return false;
+  if (canonical.startsWith("ff")) return false;
+  if (canonical.startsWith("2001:db8")) return false;
+  if (canonical.startsWith("64:ff9b:")) return false;
+  if (canonical.startsWith("2001:10:")) return false;
+  if (canonical.startsWith("2002:")) return false;
+  if (canonical.startsWith("2001:0:") || canonical.startsWith("2001::")) return false;
+  if (canonical.startsWith("2001:2:")) return false;
+  if (isPcpAnycast(canonical)) return false;
+  return true;
+}
+
 export function normalizeWebsitePolicy(value: unknown): WebsitePolicy {
   if (value === null || value === undefined) {
     return { allowedDomains: [], blockedDomains: [] };

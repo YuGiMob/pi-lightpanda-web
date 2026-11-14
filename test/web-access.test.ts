@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkUrlAccess,
   hostnameAllowed,
+  isPublicIp,
   normalizeDomain,
   normalizeUrlScheme,
   scopeSearchQuery,
@@ -68,6 +69,26 @@ describe("checkUrlAccess", () => {
     };
     expect(checkUrlAccess("https://d0.example/x", overLimit)[0]).toBe(false);
     expect(hostnameAllowed("d0.example", overLimit)).toBe(false);
+  });
+});
+
+describe("isPublicIp", () => {
+  it("blocks private, loopback, link-local and reserved addresses", () => {
+    expect(isPublicIp("127.0.0.1")).toBe(false);
+    expect(isPublicIp("10.0.0.5")).toBe(false);
+    expect(isPublicIp("192.168.1.1")).toBe(false);
+    expect(isPublicIp("169.254.169.254")).toBe(false);
+    expect(isPublicIp("100.64.0.1")).toBe(false);
+    expect(isPublicIp("::1")).toBe(false);
+    expect(isPublicIp("::ffff:127.0.0.1")).toBe(false);
+    expect(isPublicIp("fe80::1")).toBe(false);
+    expect(isPublicIp("fd12::1")).toBe(false);
+  });
+
+  it("accepts public addresses", () => {
+    expect(isPublicIp("8.8.8.8")).toBe(true);
+    expect(isPublicIp("1.1.1.1")).toBe(true);
+    expect(isPublicIp("2606:4700:4700::1111")).toBe(true);
   });
 });
 

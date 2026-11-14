@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchPageText } from "../web-fetch.ts";
 import { setCached, type CacheEntry } from "../cache.ts";
 import { makePdf, makeSpawn, spawnFailing, spawnRendering } from "./helpers.ts";
@@ -45,10 +45,41 @@ describe("remote fetches", () => {
     expect(out).toBe("Failed to fetch URL: HTTP 404 Not Found");
   });
 
-  it("reports remote pdfs as unreadable", async () => {
+  it("reports remote pdfs as unreadable when the exception is disabled", async () => {
     const { spawnImpl } = spawnRendering("", { headers: { "content-type": "application/pdf" } });
-    const out = await fetchPageText("https://example.com/doc.pdf", { spawn: spawnImpl });
+    const out = await fetchPageText("https://example.com/doc.pdf", {
+      spawn: spawnImpl,
+      allowRemotePdf: false,
+    });
     expect(out).toBe("(PDF content cannot be read by the local renderer)");
+  });
+
+  it("uses the direct PDF fetcher for PDF-looking URLs", async () => {
+    const pdfFetcher = vi.fn(async () => ({ text: "Remote PDF text" }));
+    const out = await fetchPageText("https://example.com/doc.pdf", { pdfFetcher, useCache: false });
+    expect(out).toBe("Remote PDF text");
+    expect(pdfFetcher).toHaveBeenCalledWith("https://example.com/doc.pdf", expect.any(Object));
+  });
+
+  it("falls back to the PDF fetcher when the renderer reports a PDF", async () => {
+    const { spawnImpl } = spawnRendering("", { headers: { "content-type": "application/pdf" } });
+    const pdfFetcher = vi.fn(async () => ({ text: "Remote PDF text" }));
+    const out = await fetchPageText("https://example.com/paper", { spawn: spawnImpl, pdfFetcher });
+    expect(out).toBe("Remote PDF text");
+  });
+
+  it("reports direct PDF failures and truncates PDF text", async () => {
+    const failing = vi.fn(async () => ({ error: "Failed to fetch URL: HTTP 404 Not Found" }));
+    expect(await fetchPageText("https://example.com/doc.pdf", { pdfFetcher: failing, useCache: false })).toBe(
+      "Failed to fetch URL: HTTP 404 Not Found",
+    );
+    const long = vi.fn(async () => ({ text: "x".repeat(300) }));
+    const out = await fetchPageText("https://example.com/doc.pdf", {
+      pdfFetcher: long,
+      maxChars: 100,
+      useCache: false,
+    });
+    expect(out).toContain("(truncated, 300 chars total)");
   });
 
   it("reports a missing renderer", async () => {

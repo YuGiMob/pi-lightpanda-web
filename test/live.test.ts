@@ -54,6 +54,15 @@ describe.skipIf(!enabled || process.platform === "win32")("lightpanda (live)", (
     expect(visibleChars(text)).toBeGreaterThan(2_000);
   }, 180_000);
 
+  it("extracts a remote PDF through the direct exception", async () => {
+    const text = await fetchPageText("https://pdfobject.com/pdf/sample.pdf", {
+      timeoutMs: 60_000,
+      useCache: false,
+    });
+    expect(text).toContain("## Page 1");
+    expect(text).toContain("Sample PDF");
+  }, 90_000);
+
   it("returns search results from at least one engine", async () => {
     const results = await searchSweep("unsloth studio", 5, undefined, 180_000, {
       renderPage: (url, options) =>

@@ -26,6 +26,7 @@
     "web-fetch.ts",
     "lightpanda.ts",
     "local-file.ts",
+    "pdf-fetch.ts",
     "page-text.ts",
     "proxy.ts",
     "web-access.ts",

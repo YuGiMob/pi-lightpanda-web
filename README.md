@@ -7,9 +7,10 @@ browser**. It is a fork of
 HTML→Markdown conversion, entity decoding, PDF layer, settings, and tests are derived from that
 project, but the network stack is replaced with Lightpanda.
 
-There is no direct Node HTTP transport, no `wreq-js` browser-fingerprint tier, and no third-party
-rendering service. Every remote page — whether fetched by `web_fetch` or used as a search result
-page — is loaded by the local browser.
+There is no direct Node HTTP transport for HTML, no `wreq-js` browser-fingerprint tier, and no
+third-party rendering service. Every remote HTML page — whether fetched by `web_fetch` or used as a
+search result page — is loaded by the local browser. PDFs are the one documented exception: a narrow
+direct downloader fetches them for MuPDF extraction, and it can be disabled.
 
 > The package name is **`pi-lightpanda-web`**. The npm package `pi-lightpanda` is a different,
 > unrelated project, so this package uses the `-web` suffix to stay unique.
@@ -20,7 +21,7 @@ page — is loaded by the local browser.
 - A Lightpanda binary (1.0.x recommended). `bash scripts/install-lightpanda.sh` downloads the newest
   stable release and writes `webRender.lightpandaPath` into the global pi settings. Set
   `PI_LIGHTPANDA_BIN` or `webRender.lightpandaPath` / `webRender.lightpandaCommand` to use your own.
-- Optional: `mupdf` for local PDF text extraction. Without it, local PDFs return a clear message.
+- Optional: `mupdf` for the full PDF engine. Without it, PDF extraction falls back to a limited regular-expression extractor.
 
 ## Install
 
@@ -108,24 +109,30 @@ Use `/search-config` to enable or disable engines; Bing and Yahoo are available 
 - Results are cached for 1 hour (128 entries, 128 MiB); a stale entry from the last 24 hours is
   served when a render fails. The cache is never used for blocked URLs or local files.
 - `maxChars` truncates the returned text with a `... (truncated, N chars total)` notice.
-- Remote PDFs are **not** read: Lightpanda returns no text for `application/pdf`, so `web_fetch`
-  reports `(PDF content cannot be read by the local renderer)`. Use a local copy if you need MuPDF
-  extraction.
+- Remote PDFs are the one direct-network exception. When a URL looks like a PDF (`.pdf`, `/pdf/`,
+  or `format=pdf`) or Lightpanda reports `application/pdf`, `web_fetch` downloads it with a
+  DNS-pinned, policy-checked, redirect-validated direct request and extracts it with MuPDF. The
+  downloader uses the same 10 MiB / 50-page limits, handles gzip/deflate/brotli, and sends a normal
+  browser User-Agent. Set `webFetch.allowRemotePdf: false` to disable the exception; PDFs then report
+  `(PDF content cannot be read by the local renderer)` again. The PDF downloader uses a direct
+  connection and does not apply proxy environment variables.
 
 ## Local and private access
 
 Private/loopback/link-local targets are allowed by default, so `http://localhost:3000` and LAN hosts
 work. Lightpanda blocks unsafe ports (for example port 1) and `file://`; local files still work
 through the fs path. Set `webFetch.allowPrivateAddresses: false` to pass
-`--block-private-networks` to Lightpanda and restore the SSRF guard. Set
-`webFetch.allowLocalFiles: false` to refuse local paths.
+`--block-private-networks` to Lightpanda and restore the SSRF guard; the direct PDF downloader then
+validates every resolved address with the same guard. Set `webFetch.allowLocalFiles: false` to refuse
+local paths.
 
 ## Proxies
 
 `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` are honored when they name an **HTTP(S)** proxy: the
 URL is passed to Lightpanda's `--http-proxy`. `NO_PROXY` exclusions are applied before launching.
 SOCKS5 proxies (including Tor) are not supported by this fork, because Lightpanda's proxy flag is
-HTTP-only.
+HTTP-only. The direct PDF downloader is an exception to this proxy handling: it connects directly and
+does not read proxy environment variables.
 
 ## Configuration
 
@@ -138,13 +145,15 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
     "maxChars": 50000,
     "timeoutMs": 60000,
     "allowPrivateAddresses": true,
-    "allowLocalFiles": true
+    "allowLocalFiles": true,
+    "allowRemotePdf": true
   },
   "webFetch": {
     "maxChars": 50000,
     "timeoutMs": 60000,
     "allowPrivateAddresses": true,
-    "allowLocalFiles": true
+    "allowLocalFiles": true,
+    "allowRemotePdf": true
   },
   "webSearch": {
     "engines": ["brave", "ecosia"],
@@ -165,6 +174,7 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 | `piLightpanda.timeoutMs` / `webFetch.timeoutMs` | `60000` fetch, `300000` search | Default `timeoutMs` when the tool param is absent (>= 1000) |
 | `piLightpanda.allowPrivateAddresses` / `webFetch.allowPrivateAddresses` | `true` | Set `false` to pass `--block-private-networks` and refuse localhost/LAN targets |
 | `piLightpanda.allowLocalFiles` / `webFetch.allowLocalFiles` | `true` | Set `false` to refuse `file://`, absolute, `~/`, and `./` paths |
+| `piLightpanda.allowRemotePdf` / `webFetch.allowRemotePdf` | `true` | Set `false` to disable the direct PDF downloader and keep Lightpanda as the only network transport |
 | `webSearch.engines` / `piLightpanda.engines` | `["brave","ecosia"]` | Enabled engines; unknown names are ignored, an empty match falls back to defaults |
 | `webSearch.engineWeights` / `piLightpanda.engineWeights` | all `1` | Positive per-engine RRF weight |
 | `webSearch.maxPerHost` / `piLightpanda.maxPerHost` | `0` (no cap) | Most results one registrable domain may contribute |
@@ -193,7 +203,9 @@ Environment overrides:
 | Local render failure | `Failed to render URL: Lightpanda exited with code N.` | Check the binary by hand. |
 | Bot challenge | `Failed to render URL: the page served a bot challenge instead of content.` | Hard anti-bot walls cannot be bypassed by Lightpanda's honest user agent. |
 | HTTP failure | `Failed to fetch URL: HTTP 404 Not Found` | Fix the URL. |
-| Remote PDF | `(PDF content cannot be read by the local renderer)` | Use a local PDF. |
+| Remote PDF disabled | `(PDF content cannot be read by the local renderer)` | Set `webFetch.allowRemotePdf: true`, or use a local PDF. |
+| PDF over the download cap | `(PDF content exceeds the download limit; not readable as text)` | Fetch a smaller PDF or use a local copy. |
+| Truncated PDF parse failure | `(PDF content could not be read as text; the download was truncated at the download limit)` | The download was cut at 10 MiB. |
 | maxChars cut | `... (truncated, N chars total)` | Raise `maxChars`. |
 | Cache fallback | `Served from cache` / `STALE cache from YYYY-MM-DD` | The render failed; output is the cached copy. |
 
@@ -210,8 +222,9 @@ npm run check:package
 ```
 
 `npm run test:unit` runs the offline suite with stubbed renderer processes. `npm run test:live` needs
-a real Lightpanda binary and skips itself unless `PI_LIGHTPANDA_E2E=1` is set. CI runs both on Linux,
-with the unit suite also on Windows and Node 22.19/24/26.
+a real Lightpanda binary and skips itself unless `PI_LIGHTPANDA_E2E=1` is set; it also exercises the
+direct PDF downloader. CI runs both on Linux, with the unit suite also on Windows and Node
+22.19/24/26.
 
 ## License
 

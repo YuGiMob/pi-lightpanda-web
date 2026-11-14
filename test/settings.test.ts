@@ -32,6 +32,7 @@ describe("fetch settings", () => {
       timeoutMs: undefined,
       allowPrivateAddresses: true,
       allowLocalFiles: true,
+      allowRemotePdf: true,
     });
   });
 
@@ -56,6 +57,7 @@ describe("fetch settings", () => {
       timeoutMs: 9000,
       allowPrivateAddresses: true,
       allowLocalFiles: false,
+      allowRemotePdf: true,
     });
   });
 
@@ -108,6 +110,17 @@ describe("search settings", () => {
 describe("lightpanda settings", () => {
   it("defaults the renderer on with no configured path", async () => {
     expect(await loadLightpandaSettings()).toEqual({ enabled: true, binaryPath: null, command: null });
+  });
+
+  it("reads the remote PDF exception with project override", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webFetch: { allowRemotePdf: false } }));
+    expect((await loadDefaultFetchSettings()).allowRemotePdf).toBe(false);
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({ webFetch: { allowRemotePdf: true } }));
+    expect((await loadDefaultFetchSettings(cwd)).allowRemotePdf).toBe(true);
   });
 
   it("reads path, command and toggle with project override", async () => {

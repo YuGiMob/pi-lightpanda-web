@@ -128,6 +128,11 @@ const ALLOW_LOCAL_FILES_PATHS: string[][] = [
   ["webFetch", "allowLocalFiles"],
 ];
 
+const ALLOW_REMOTE_PDF_PATHS: string[][] = [
+  ["piLightpanda", "allowRemotePdf"],
+  ["webFetch", "allowRemotePdf"],
+];
+
 const LIGHTPANDA_ENABLED_PATHS: string[][] = [
   ["piLightpanda", "lightpandaEnabled"],
   ["webRender", "lightpandaEnabled"],
@@ -245,11 +250,13 @@ export async function loadDefaultFetchSettings(cwd?: string): Promise<{
   timeoutMs?: number;
   allowPrivateAddresses: boolean;
   allowLocalFiles: boolean;
+  allowRemotePdf: boolean;
 }> {
   let maxChars: number | undefined;
   let timeoutMs: number | undefined;
   let allowPrivateAddresses = true;
   let allowLocalFiles = true;
+  let allowRemotePdf = true;
   for (const data of await settingsEntries(cwd)) {
     const c = pickNumber(data, FETCH_MAX_CHARS_PATHS);
     if (c !== undefined && c > 0) maxChars = c;
@@ -259,8 +266,10 @@ export async function loadDefaultFetchSettings(cwd?: string): Promise<{
     if (p !== undefined) allowPrivateAddresses = p;
     const l = pickBoolean(data, ALLOW_LOCAL_FILES_PATHS);
     if (l !== undefined) allowLocalFiles = l;
+    const r = pickBoolean(data, ALLOW_REMOTE_PDF_PATHS);
+    if (r !== undefined) allowRemotePdf = r;
   }
-  return { maxChars, timeoutMs, allowPrivateAddresses, allowLocalFiles };
+  return { maxChars, timeoutMs, allowPrivateAddresses, allowLocalFiles, allowRemotePdf };
 }
 
 export async function loadLightpandaSettings(cwd?: string): Promise<{

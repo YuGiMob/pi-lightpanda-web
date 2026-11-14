@@ -40,6 +40,7 @@ async function fetchDefaults(cwd: string | undefined, params: { timeoutMs?: unkn
     maxChars: maxCharsParam ?? defaults.maxChars,
     allowPrivateAddresses: defaults.allowPrivateAddresses,
     allowLocalFiles: defaults.allowLocalFiles,
+    allowRemotePdf: defaults.allowRemotePdf,
   };
 }
 
@@ -136,8 +137,10 @@ export function createWebTools(deps: WebToolsDeps = {}) {
         "Lightpanda browser, so JavaScript-heavy pages are rendered too; nothing is sent to a " +
         "third-party rendering service. HTML is converted to Markdown using a main-content heuristic: " +
         "article/main scoping plus hidden-element and boilerplate stripping. Local files (file:// URLs, " +
-        "absolute, ~/ or ./ paths, including PDFs) are read directly. Remote PDFs cannot be read by the " +
-        "local renderer. The result is cached and truncated with maxChars when given.",
+        "absolute, ~/ or ./ paths, including PDFs) are read directly. Remote PDFs are the one direct " +
+        "network exception: they are downloaded with a DNS-pinned, policy-checked request and extracted " +
+        "with MuPDF; set webFetch.allowRemotePdf: false to disable that exception. The result is cached " +
+        "and truncated with maxChars when given.",
       promptGuidelines: [
         "web_fetch renders pages locally with Lightpanda; it never calls a third-party rendering service.",
       ],
@@ -159,6 +162,7 @@ export function createWebTools(deps: WebToolsDeps = {}) {
           maxChars: defaults.maxChars,
           allowPrivateAddresses: defaults.allowPrivateAddresses,
           allowLocalFiles: defaults.allowLocalFiles,
+          allowRemotePdf: defaults.allowRemotePdf,
           settings: lightpanda,
         });
         return { content: [{ type: "text", text }], details: {} };

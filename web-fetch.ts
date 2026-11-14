@@ -1,10 +1,12 @@
 import { getCached, isFresh, setCached, staleNotice } from "./cache.ts";
 import {
+  PDF_MESSAGE,
   renderPageWithLightpanda,
   type LightpandaRenderOptions,
   type LightpandaSettings,
   type LightpandaSpawn,
 } from "./lightpanda.ts";
+import { fetchRemotePdf, looksLikePdfUrl, type PdfFetchOutcome } from "./pdf-fetch.ts";
 import { parseLocalPath, readLocalFile } from "./local-file.ts";
 import { truncatePageText } from "./page-text.ts";
 import { normalizeUrlScheme, type WebsitePolicy } from "./web-access.ts";
@@ -24,20 +26,37 @@ export interface FetchPageOptions {
   maxPdfBytes?: number;
   allowPrivateAddresses?: boolean;
   allowLocalFiles?: boolean;
+  allowRemotePdf?: boolean;
   useCache?: boolean;
   settings?: LightpandaSettings | null;
   spawn?: LightpandaSpawn;
   binaryPath?: string | null;
   command?: string[] | null;
+  pdfFetcher?: typeof fetchRemotePdf;
 }
 
 function failed(text: string): boolean {
   return (
     text.startsWith("Failed to ") ||
-    text.startsWith("(PDF content") ||
+    text.startsWith("(PDF ") ||
     text.startsWith("(binary content") ||
     text === "(page returned no readable text)"
   );
+}
+
+async function finishPdf(
+  outcome: Exclude<PdfFetchOutcome, null>,
+  context: { url: string; useCache: boolean; now: () => number; maxChars?: number },
+): Promise<string> {
+  if ("error" in outcome) {
+    if (context.useCache && !outcome.error.startsWith("Blocked:")) {
+      const cached = await cachedFallback(context.url, context.now);
+      if (cached !== null) return truncatePageText(cached, context.maxChars);
+    }
+    return outcome.error;
+  }
+  if (context.useCache) await setCached(context.url, outcome.text, "text/markdown");
+  return truncatePageText(outcome.text, context.maxChars);
 }
 
 async function cachedFallback(url: string, now: () => number): Promise<string | null> {
@@ -83,7 +102,27 @@ export async function fetchPageText(url: string, options: FetchPageOptions = {})
     command: options.command,
   };
   const useCache = options.useCache ?? options.spawn === undefined;
+  const allowRemotePdf = options.allowRemotePdf !== false;
+  const pdfFetcher = options.pdfFetcher ?? fetchRemotePdf;
+  const pdfOptions = {
+    timeoutMs: remaining,
+    deadlineMs: options.deadlineMs,
+    nowMs: now,
+    signal: options.signal,
+    websitePolicy: options.websitePolicy ?? null,
+    allowPrivateAddresses: options.allowPrivateAddresses,
+    maxPdfBytes: options.maxPdfBytes,
+  };
+  const pdfContext = { url: normalized, useCache, now, maxChars: options.maxChars };
+  if (allowRemotePdf && looksLikePdfUrl(normalized)) {
+    const outcome = await pdfFetcher(normalized, pdfOptions);
+    if (outcome !== null) return finishPdf(outcome, pdfContext);
+  }
   const text = await renderPageWithLightpanda(normalized, renderOptions);
+  if (text === PDF_MESSAGE && allowRemotePdf) {
+    const outcome = await pdfFetcher(normalized, pdfOptions);
+    if (outcome !== null) return finishPdf(outcome, pdfContext);
+  }
   if (text === null) {
     if (useCache) {
       const cached = await cachedFallback(normalized, now);

@@ -106,9 +106,13 @@ describe("fetch contract", () => {
         code: 0,
       };
     });
-    expect(await fetchPageText("https://example.com/doc.pdf", { spawn: spawnImpl, binaryPath: "lp-pdf-test" })).toBe(
-      "(PDF content cannot be read by the local renderer)",
-    );
+    expect(
+      await fetchPageText("https://example.com/doc.pdf", {
+        spawn: spawnImpl,
+        binaryPath: "lp-pdf-test",
+        allowRemotePdf: false,
+      }),
+    ).toBe("(PDF content cannot be read by the local renderer)");
   });
 
   it("formats stale cache notices with an iso date", () => {

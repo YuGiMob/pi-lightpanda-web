@@ -118,7 +118,11 @@ describe("web_fetch tool", () => {
       await webFetchTool.execute("id", { url: "https://example.com/" }, undefined, undefined, {} as never);
       expect(fetchPageText).toHaveBeenCalledWith(
         "https://example.com/",
-        expect.objectContaining({ allowPrivateAddresses: false, allowLocalFiles: false }),
+        expect.objectContaining({
+          allowPrivateAddresses: false,
+          allowLocalFiles: false,
+          allowRemotePdf: true,
+        }),
       );
     } finally {
       if (previousEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
