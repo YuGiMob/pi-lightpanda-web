@@ -152,7 +152,7 @@ if (existsSync(settingsFile)) {
   mode = statSync(settingsFile).mode & 0o777;
 }
 
-const sections = [settings.unslothWebTools, settings.webRender].filter(
+const sections = [settings.piLightpanda, settings.webRender].filter(
   (section) => section && typeof section === "object" && !Array.isArray(section),
 );
 const alreadyConfigured = sections.some(
