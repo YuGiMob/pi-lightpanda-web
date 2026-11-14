@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="lightpanda-io/browser"
-DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pi-unsloth-webtools/lightpanda"
+DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pi-lightpanda-web/lightpanda"
 PINNED_FALLBACK_VERSION="1.0.0"
 
 DIR="$DEFAULT_DIR"
@@ -14,13 +14,13 @@ NO_CONFIGURE=0
 
 usage() {
   cat <<'EOF'
-Install the Lightpanda browser used by this package's local rendering tier.
+Install the Lightpanda browser used by this package as its only network engine.
 
 Usage: bash scripts/install-lightpanda.sh [options]
 
   --version=X    Release tag to install (default: the newest stable release, e.g. 1.0.0;
                  pass --version=nightly for the nightly build)
-  --dir=PATH     Install directory (default: $XDG_DATA_HOME/pi-unsloth-webtools/lightpanda)
+  --dir=PATH     Install directory (default: $XDG_DATA_HOME/pi-lightpanda-web/lightpanda)
   --force        Reinstall even when a working binary is already present
   --no-shim      Fail instead of bundling a newer libc when the system glibc is too old
   --print-path   Print only the launcher path (for scripts and CI)
@@ -73,13 +73,13 @@ case "$os/$arch" in
 Lightpanda ships no native Windows build. Run it inside WSL2 instead:
 
   1. in WSL:   bash scripts/install-lightpanda.sh
-               (it prints a path such as /home/<you>/.local/share/pi-unsloth-webtools/lightpanda/lightpanda-run)
+               (it prints a path such as /home/<you>/.local/share/pi-lightpanda-web/lightpanda/lightpanda-run)
 
   2. in Windows settings.json, drive that binary through wsl.exe:
 
      {
        "webRender": {
-         "lightpandaCommand": ["wsl.exe", "-e", "/home/<you>/.local/share/pi-unsloth-webtools/lightpanda/lightpanda-run"]
+         "lightpandaCommand": ["wsl.exe", "-e", "/home/<you>/.local/share/pi-lightpanda-web/lightpanda/lightpanda-run"]
        }
      }
 

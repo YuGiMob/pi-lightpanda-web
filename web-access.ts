@@ -70,10 +70,6 @@ export function normalizeDomain(value: unknown): string {
   return asciiDomain;
 }
 
-export function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-}
-
 function compressIpv6(ip: string): string {
   const segments = ip.toLowerCase().split("::");
   if (segments.length > 2) throw new Error("invalid ipv6");
@@ -113,16 +109,6 @@ function compressGroups(groups: string[]): string {
   const head = normalized.slice(0, bestStart);
   const tail = normalized.slice(bestStart + bestLen);
   return `${head.join(":")}::${tail.join(":")}`;
-}
-
-const PCP_ANYCAST = new Set(["2001:1::1", "2001:1::2"]);
-
-function isPcpAnycast(lower: string): boolean {
-  try {
-    return PCP_ANYCAST.has(compressIpv6(lower));
-  } catch {
-    return false;
-  }
 }
 
 export function normalizeWebsitePolicy(value: unknown): WebsitePolicy {
@@ -293,135 +279,4 @@ function rewriteBareHost(url: string, authority: string): string {
   const port = colon === -1 ? "" : authority.slice(colon + 1);
   if (port && !(PORT_RE.test(port) && Number(port) >= 1 && Number(port) <= 65535)) return url;
   return "https://" + url.replace(/^\/\//, "");
-}
-
-const GITHUB_NON_OWNER_SEGMENTS = new Set([
-  "about",
-  "apps",
-  "codespaces",
-  "collections",
-  "contact",
-  "customer-stories",
-  "dashboard",
-  "discussions",
-  "enterprise",
-  "explore",
-  "features",
-  "issues",
-  "join",
-  "login",
-  "marketplace",
-  "new",
-  "notifications",
-  "organizations",
-  "orgs",
-  "pricing",
-  "pulls",
-  "search",
-  "security",
-  "settings",
-  "signup",
-  "site",
-  "sponsors",
-  "team",
-  "topics",
-  "trending",
-]);
-
-const GITHUB_NAME_RE = /^[A-Za-z0-9_.\-]{1,100}$/;
-
-function parseGithubRepo(url: string): { owner: string; repo: string; rest: string[] } | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  const host = (parsed.hostname ?? "").toLowerCase();
-  if (host !== "github.com" && host !== "www.github.com") return null;
-  const parts = parsed.pathname.split("/").filter((part) => part.length > 0);
-  if (parts.length < 2) return null;
-  const owner = parts[0];
-  const repoRaw = parts[1];
-  if (GITHUB_NON_OWNER_SEGMENTS.has(owner.toLowerCase())) return null;
-  const repo = repoRaw.endsWith(".git") ? repoRaw.slice(0, -4) : repoRaw;
-  if (!GITHUB_NAME_RE.test(owner) || !GITHUB_NAME_RE.test(repo)) return null;
-  return { owner, repo, rest: parts.slice(2) };
-}
-function githubRepoRoot(url: string): { owner: string; repo: string; rest: string[] } | null {
-  const parsed = parseGithubRepo(url);
-  if (!parsed || parsed.rest.length !== 0) return null;
-  return parsed;
-}
-
-export function githubRepoReadmeApiUrl(url: string): string | null {
-  const parsed = githubRepoRoot(url);
-  if (!parsed) return null;
-  return `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/readme`;
-}
-
-export function githubRepoRawReadmeUrl(url: string): string | null {
-  const parsed = githubRepoRoot(url);
-  if (!parsed) return null;
-  return `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/HEAD/README.md`;
-}
-export function githubRawContentUrl(url: string): string | null {
-  const parsed = parseGithubRepo(url);
-  if (!parsed || parsed.rest.length < 2) return null;
-  const [kind, ref] = parsed.rest;
-  if (kind !== "blob" && kind !== "raw") return null;
-  if (!ref) return null;
-  const filePath = parsed.rest.slice(2).join("/");
-  if (!filePath) return null;
-  return `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${ref}/${filePath}`;
-}
-
-function ipv4Octets(ip: string): number[] | null {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  const octets = parts.map((part) => Number(part));
-  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
-  return octets;
-}
-
-export function isPublicIp(ip: string): boolean {
-  if (ip.includes("%")) return false;
-  if (ip.includes(".") && ip.includes(":")) return false;
-  if (ip.includes(".")) {
-    const o = ipv4Octets(ip);
-    if (!o) return false;
-    if (o[0] === 0) return false;
-    if (o[0] === 10) return false;
-    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return false;
-    if (o[0] === 127) return false;
-    if (o[0] === 169 && o[1] === 254) return false;
-    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return false;
-    if (o[0] === 192 && o[1] === 0 && o[2] === 0) return false;
-    if (o[0] === 192 && o[1] === 0 && o[2] === 2) return false;
-    if (o[0] === 192 && o[1] === 88 && o[2] === 99) return false;
-    if (o[0] === 192 && o[1] === 168) return false;
-    if (o[0] === 198 && (o[1] === 18 || o[1] === 19)) return false;
-    if (o[0] === 198 && o[1] === 51 && o[2] === 100) return false;
-    if (o[0] === 203 && o[1] === 0 && o[2] === 113) return false;
-    if (o[0] >= 224) return false;
-    return true;
-  }
-  let canonical: string;
-  try {
-    canonical = compressIpv6(ip);
-  } catch {
-    return false;
-  }
-  if (canonical === "::1" || canonical.startsWith("::")) return false;
-  if (canonical.startsWith("fc") || canonical.startsWith("fd")) return false;
-  if (/^fe[89a-f][0-9a-f]:/.test(canonical)) return false;
-  if (canonical.startsWith("ff")) return false;
-  if (canonical.startsWith("2001:db8")) return false;
-  if (canonical.startsWith("64:ff9b:")) return false;
-  if (canonical.startsWith("2001:10:")) return false;
-  if (canonical.startsWith("2002:")) return false;
-  if (canonical.startsWith("2001:0:") || canonical.startsWith("2001::")) return false;
-  if (canonical.startsWith("2001:2:")) return false;
-  if (isPcpAnycast(canonical)) return false;
-  return true;
 }

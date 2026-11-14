@@ -100,7 +100,7 @@ describe("cache storage", () => {
     delete process.env.PI_UNSLOTH_CACHE_DIR;
     process.env.PI_CODING_AGENT_DIR = agent;
     await setCached("https://example.com/", "body", "text/plain");
-    expect(await jsonNames(join(agent, "pi-unsloth-cache"))).toHaveLength(1);
+    expect(await jsonNames(join(agent, "pi-lightpanda-cache"))).toHaveLength(1);
   });
 });
 

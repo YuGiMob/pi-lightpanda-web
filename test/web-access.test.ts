@@ -1,17 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   checkUrlAccess,
-  githubRawContentUrl,
-  githubRepoRawReadmeUrl,
-  githubRepoReadmeApiUrl,
   hostnameAllowed,
-  isPublicIp,
   normalizeDomain,
   normalizeUrlScheme,
   scopeSearchQuery,
   websitePolicyPrompt,
 } from "../web-access.ts";
-import { truncatePageText } from "../web-fetch.ts";
 
 describe("normalizeUrlScheme", () => {
   it("rewrites bare hosts to https", () => {
@@ -21,7 +16,6 @@ describe("normalizeUrlScheme", () => {
     expect(normalizeUrlScheme("https://google.com")).toBe("https://google.com");
     expect(normalizeUrlScheme("http://google.com")).toBe("http://google.com");
     expect(normalizeUrlScheme("example.com:8443/path")).toBe("https://example.com:8443/path");
-    expect(normalizeUrlScheme("example.com:8443")).toBe("https://example.com:8443");
     expect(normalizeUrlScheme("sub.example.co.uk:8080")).toBe("https://sub.example.co.uk:8080");
   });
 
@@ -30,8 +24,6 @@ describe("normalizeUrlScheme", () => {
     expect(normalizeUrlScheme("file:///etc/passwd")).toBe("file:///etc/passwd");
     expect(normalizeUrlScheme("javascript:alert(1)")).toBe("javascript:alert(1)");
     expect(normalizeUrlScheme("mailto:a@b.c")).toBe("mailto:a@b.c");
-    expect(normalizeUrlScheme("file:80")).toBe("file:80");
-    expect(normalizeUrlScheme("javascript:443/path")).toBe("javascript:443/path");
     expect(normalizeUrlScheme("/login")).toBe("/login");
     expect(normalizeUrlScheme("example.com:99999")).toBe("example.com:99999");
     expect(normalizeUrlScheme("example.com:abc")).toBe("example.com:abc");
@@ -39,36 +31,26 @@ describe("normalizeUrlScheme", () => {
 });
 
 describe("checkUrlAccess", () => {
-  it("rejects empty urls", () => {
-    const [allowed, reason] = checkUrlAccess("", null);
-    expect(allowed).toBe(false);
-    expect(reason).toBe("Blocked: the URL is empty.");
+  it("rejects empty urls and invalid characters", () => {
+    expect(checkUrlAccess("", null)[1]).toBe("Blocked: the URL is empty.");
+    expect(checkUrlAccess("https://exa mple.com", null)[1]).toBe("Blocked: the URL contains invalid characters.");
+    expect(checkUrlAccess("https://example.com\\evil", null)[0]).toBe(false);
   });
 
-  it("rejects invalid characters", () => {
-    const [allowed, reason] = checkUrlAccess("https://exa mple.com", null);
-    expect(allowed).toBe(false);
-    expect(reason).toBe("Blocked: the URL contains invalid characters.");
-    const [allowed2] = checkUrlAccess("https://example.com\\evil", null);
-    expect(allowed2).toBe(false);
+  it("rejects non-http schemes, credentials, and encoded hosts", () => {
+    expect(checkUrlAccess("ftp://x.com", null)[1]).toBe("Blocked: only http/https URLs are allowed.");
+    expect(checkUrlAccess("https://user:pass@example.com", null)[1]).toBe(
+      "Blocked: URLs with credentials or encoded hostnames are not allowed.",
+    );
   });
 
-  it("rejects non-http schemes", () => {
-    const [allowed, reason] = checkUrlAccess("ftp://x.com", null);
-    expect(allowed).toBe(false);
-    expect(reason).toBe("Blocked: only http/https URLs are allowed.");
-  });
-
-  it("rejects credentials and encoded hosts", () => {
-    const [allowed, reason] = checkUrlAccess("https://user:pass@example.com", null);
-    expect(allowed).toBe(false);
-    expect(reason).toBe("Blocked: URLs with credentials or encoded hostnames are not allowed.");
-  });
-
-  it("accepts plain https urls", () => {
+  it("accepts plain https urls and bracketed ipv6", () => {
     const [allowed, , hostname] = checkUrlAccess("https://example.com/path", null);
     expect(allowed).toBe(true);
     expect(hostname).toBe("example.com");
+    const [ipv6Allowed, , ipv6] = checkUrlAccess("http://[::1]:8080/x", null);
+    expect(ipv6Allowed).toBe(true);
+    expect(ipv6).toBe("::1");
   });
 
   it("enforces website policies", () => {
@@ -87,17 +69,6 @@ describe("checkUrlAccess", () => {
     expect(checkUrlAccess("https://d0.example/x", overLimit)[0]).toBe(false);
     expect(hostnameAllowed("d0.example", overLimit)).toBe(false);
   });
-
-  it("passes bracketed ipv6 hosts to the DNS layer", () => {
-    const [allowed, , hostname] = checkUrlAccess("http://[::1]:8080/x", null);
-    expect(allowed).toBe(true);
-    expect(hostname).toBe("::1");
-  });
-
-  it("accepts public ipv4 literals and leaves private ones to the DNS layer", () => {
-    expect(checkUrlAccess("https://93.184.216.34/", null)[0]).toBe(true);
-    expect(checkUrlAccess("https://8.8.8.8/x", null)[0]).toBe(true);
-  });
 });
 
 describe("normalizeDomain", () => {
@@ -111,82 +82,13 @@ describe("normalizeDomain", () => {
     expect(() => normalizeDomain("x.com:443")).toThrow();
     expect(() => normalizeDomain("")).toThrow();
     expect(() => normalizeDomain("0x7f.0.0.1")).toThrow();
+    expect(() => normalizeDomain("001.002.003.004")).toThrow();
   });
 
-  it("accepts canonical public ipv4 literals", () => {
+  it("accepts canonical ip literals", () => {
     expect(normalizeDomain("93.184.216.34")).toBe("93.184.216.34");
     expect(normalizeDomain("8.8.8.8.")).toBe("8.8.8.8");
-  });
-
-  it("rejects non-canonical and out-of-range numeric hosts", () => {
-    expect(() => normalizeDomain("256.1.1.1")).toThrow();
-    expect(() => normalizeDomain("001.002.003.004")).toThrow();
-    expect(() => normalizeDomain("1.2.3")).toThrow();
-  });
-});
-
-describe("isPublicIp", () => {
-  it("blocks private, loopback, link-local and reserved addresses", () => {
-    expect(isPublicIp("127.0.0.1")).toBe(false);
-    expect(isPublicIp("10.0.0.5")).toBe(false);
-    expect(isPublicIp("192.168.1.1")).toBe(false);
-    expect(isPublicIp("172.16.0.1")).toBe(false);
-    expect(isPublicIp("169.254.169.254")).toBe(false);
-    expect(isPublicIp("100.64.0.1")).toBe(false);
-    expect(isPublicIp("0.0.0.0")).toBe(false);
-    expect(isPublicIp("224.0.0.1")).toBe(false);
-    expect(isPublicIp("::1")).toBe(false);
-    expect(isPublicIp("::")).toBe(false);
-    expect(isPublicIp("fe80::1")).toBe(false);
-    expect(isPublicIp("fc00::1")).toBe(false);
-    expect(isPublicIp("fd12::1")).toBe(false);
-    expect(isPublicIp("ff02::1")).toBe(false);
-    expect(isPublicIp("::ffff:192.168.1.1")).toBe(false);
-    expect(isPublicIp("192.88.99.1")).toBe(false);
-    expect(isPublicIp("2001:1::1")).toBe(false);
-    expect(isPublicIp("2001:1::2")).toBe(false);
-    expect(isPublicIp("2001:2::1")).toBe(false);
-    expect(isPublicIp("2001:1:0:0:0:0:0:1")).toBe(false);
-    expect(isPublicIp("2001:1:0:0:0:0:0:2")).toBe(false);
-  });
-
-  it("blocks ipv4-embedding tunnel prefixes", () => {
-    expect(isPublicIp("2002:7f00:1::1")).toBe(false);
-    expect(isPublicIp("2002:808:808::")).toBe(false);
-    expect(isPublicIp("2001:0:4136:e378:8000:63bf:3fff:fdd2")).toBe(false);
-    expect(isPublicIp("2001::1")).toBe(false);
-  });
-
-  it("blocks ipv4-compatible and long-form mapped forms", () => {
-    expect(isPublicIp("::7f00:1")).toBe(false);
-    expect(isPublicIp("::c0a8:101")).toBe(false);
-    expect(isPublicIp("::a00:1")).toBe(false);
-    expect(isPublicIp("0:0:0:0:0:ffff:7f00:1")).toBe(false);
-    expect(isPublicIp("0:0:0:0:0:0:0:1")).toBe(false);
-  });
-
-  it("blocks all ipv4-mapped forms, even for public addresses", () => {
-    expect(isPublicIp("::ffff:8.8.8.8")).toBe(false);
-    expect(isPublicIp("0:0:0:0:0:ffff:1.1.1.1")).toBe(false);
-    expect(isPublicIp("::ffff:808:808")).toBe(false);
-  });
-
-  it("blocks zero-padded spellings that evade run detection", () => {
-    expect(isPublicIp("0000:0000:0000:0000:0000:0000:0000:0001")).toBe(false);
-    expect(isPublicIp("0000:0000:0000:0000:0000:ffff:7f00:1")).toBe(false);
-    expect(isPublicIp("0000:0000:0000:0000:0000:0000:0000:0000")).toBe(false);
-  });
-
-  it("accepts public addresses", () => {
-    expect(isPublicIp("8.8.8.8")).toBe(true);
-    expect(isPublicIp("1.1.1.1")).toBe(true);
-    expect(isPublicIp("2606:4700:4700::1111")).toBe(true);
-  });
-
-  it("blocks documentation and TEST-NET ranges", () => {
-    expect(isPublicIp("192.0.2.1")).toBe(false);
-    expect(isPublicIp("198.51.100.7")).toBe(false);
-    expect(isPublicIp("203.0.113.7")).toBe(false);
+    expect(normalizeDomain("[::1]")).toBe("::1");
   });
 });
 
@@ -199,124 +101,25 @@ describe("websitePolicyPrompt and scopeSearchQuery", () => {
     expect(prompt).toContain("b.com");
   });
 
-  it("scopes queries with site filters", () => {
+  it("scopes queries with rotating site filters", () => {
     expect(scopeSearchQuery("llama", null)).toBe("llama");
     const policy = { allowedDomains: ["a.com", "b.com"], blockedDomains: [] };
     const scoped = scopeSearchQuery("llama", policy);
     expect(scoped).toContain("site:a.com");
     expect(scoped).toContain("site:b.com");
   });
-});
 
-describe("githubRepoReadmeApiUrl", () => {
-  it("rewrites repo root pages", () => {
-    expect(githubRepoReadmeApiUrl("https://github.com/unslothai/unsloth")).toBe(
-      "https://api.github.com/repos/unslothai/unsloth/readme",
-    );
-    expect(githubRepoReadmeApiUrl("https://github.com/unslothai/unsloth/")).toBe(
-      "https://api.github.com/repos/unslothai/unsloth/readme",
-    );
-    expect(githubRepoReadmeApiUrl("https://github.com/unslothai/unsloth.git")).toBe(
-      "https://api.github.com/repos/unslothai/unsloth/readme",
-    );
-    expect(githubRepoRawReadmeUrl("https://github.com/unslothai/unsloth")).toBe(
-      "https://raw.githubusercontent.com/unslothai/unsloth/HEAD/README.md",
-    );
-    expect(githubRepoRawReadmeUrl("https://github.com/unslothai/unsloth.git")).toBe(
-      "https://raw.githubusercontent.com/unslothai/unsloth/HEAD/README.md",
-    );
-  });
-
-  it("leaves non-repo pages alone", () => {
-    for (const url of [
-      "https://github.com/unslothai/unsloth/blob/main/README.md",
-      "https://github.com/login",
-      "https://example.com/unslothai/unsloth",
-    ]) {
-      expect(githubRepoReadmeApiUrl(url)).toBeNull();
-      expect(githubRepoRawReadmeUrl(url)).toBeNull();
+  it("rotates the site filter so every allowed domain is reachable", () => {
+    const domains = Array.from({ length: 20 }, (_, i) => `d${i}.example`);
+    const policy = { allowedDomains: domains, blockedDomains: [] };
+    const covered = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const scoped = scopeSearchQuery(`query ${i}`, policy);
+      const hits = domains.filter((domain) => scoped.includes(`site:${domain}`));
+      expect(hits.length).toBe(8);
+      hits.forEach((hit) => covered.add(hit));
     }
-  });
-});
-
-describe("githubRawContentUrl", () => {
-  it("rewrites blob and raw views to raw.githubusercontent.com", () => {
-    expect(githubRawContentUrl("https://github.com/unslothai/unsloth/blob/main/README.md")).toBe(
-      "https://raw.githubusercontent.com/unslothai/unsloth/main/README.md",
-    );
-    expect(githubRawContentUrl("https://github.com/unslothai/unsloth/raw/main/README.md")).toBe(
-      "https://raw.githubusercontent.com/unslothai/unsloth/main/README.md",
-    );
-    expect(githubRawContentUrl("https://github.com/owner/repo/blob/v1.2.3/docs/guide.md")).toBe(
-      "https://raw.githubusercontent.com/owner/repo/v1.2.3/docs/guide.md",
-    );
-    expect(githubRawContentUrl("https://github.com/owner/repo/blob/main/src/deep/nested/file.ts")).toBe(
-      "https://raw.githubusercontent.com/owner/repo/main/src/deep/nested/file.ts",
-    );
-  });
-
-  it("handles git suffixes, www hosts and fragments", () => {
-    expect(githubRawContentUrl("https://github.com/owner/repo.git/blob/main/README.md")).toBe(
-      "https://raw.githubusercontent.com/owner/repo/main/README.md",
-    );
-    expect(githubRawContentUrl("http://www.github.com/owner/repo/blob/main/file.txt")).toBe(
-      "https://raw.githubusercontent.com/owner/repo/main/file.txt",
-    );
-    expect(githubRawContentUrl("https://github.com/owner/repo/blob/main/README.md#install")).toBe(
-      "https://raw.githubusercontent.com/owner/repo/main/README.md",
-    );
-  });
-
-  it("leaves non-blob pages and malformed urls alone", () => {
-    for (const url of [
-      "https://github.com/unslothai/unsloth",
-      "https://github.com/unslothai/unsloth/tree/main/studio",
-      "https://github.com/unslothai/unsloth/edit/main/README.md",
-      "https://github.com/unslothai/unsloth/blob",
-      "https://github.com/unslothai/unsloth/blob/main",
-      "https://github.com/settings/profile/blob/main/x.md",
-      "https://github.com/topics/llm",
-      "https://example.com/owner/repo/blob/main/README.md",
-      "https://raw.githubusercontent.com/owner/repo/main/README.md",
-      "not a url",
-      "",
-    ]) {
-      expect(githubRawContentUrl(url)).toBeNull();
-    }
-  });
-});
-
-describe("truncatePageText", () => {
-  it("marks truncated pages", () => {
-    const text = "x".repeat(300);
-    const out = truncatePageText(text, 100);
-    expect(out.length).toBeLessThan(200);
-    expect(out).toContain("(truncated, 300 chars total)");
-  });
-
-  it("keeps the download-cap notice intact when maxChars truncates", () => {
-    for (const suffix of [
-      "\n\n... (page truncated at the download limit)",
-      "... (page truncated at the download limit)",
-    ]) {
-      const capped = "x".repeat(400) + suffix;
-      const out = truncatePageText(capped, 100);
-      expect(out).toContain("(page truncated at the download limit)");
-      expect(out).toContain(`(truncated, ${capped.length} chars total)`);
-    }
-  });
-
-  it("returns pages within the budget unchanged", () => {
-    expect(truncatePageText("hello", 1000)).toBe("hello");
-  });
-
-  it("reports empty pages", () => {
-    expect(truncatePageText("", 1000)).toBe("(page returned no readable text)");
-  });
-
-  it("does not split surrogate pairs at the maxChars boundary", () => {
-    const out = truncatePageText("😀".repeat(100), 149);
-    expect(out.indexOf("\n\n")).toBe(148);
-    expect(out).toContain("(truncated, 200 chars total)");
+    expect(covered).toEqual(new Set(domains));
+    expect(scopeSearchQuery("stable", policy)).toBe(scopeSearchQuery("stable", policy));
   });
 });

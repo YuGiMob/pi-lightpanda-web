@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentDir } from "./agent-dir.ts";
-import type { FetchTransport } from "./web-fetch.ts";
 
 async function readJson(file: string): Promise<Record<string, unknown> | undefined> {
   try {
@@ -105,73 +104,58 @@ function pickString(data: Record<string, unknown>, paths: string[][]): string | 
 const MAX_RESULTS = 5;
 
 const MAX_RESULTS_PATHS: string[][] = [
-  ["unslothWebTools", "maxResults"],
+  ["piLightpanda", "maxResults"],
   ["webSearch", "maxResults"],
-  ["smartWebSearch", "resultsPerQuery"],
 ];
 
 const FETCH_MAX_CHARS_PATHS: string[][] = [
-  ["unslothWebTools", "maxChars"],
+  ["piLightpanda", "maxChars"],
   ["webFetch", "maxChars"],
-  ["smartFetchDefaultMaxChars"],
 ];
 
 const FETCH_TIMEOUT_PATHS: string[][] = [
-  ["unslothWebTools", "timeoutMs"],
+  ["piLightpanda", "timeoutMs"],
   ["webFetch", "timeoutMs"],
-  ["smartFetchDefaultTimeoutMs"],
 ];
 
 const ALLOW_PRIVATE_ADDRESSES_PATHS: string[][] = [
-  ["unslothWebTools", "allowPrivateAddresses"],
+  ["piLightpanda", "allowPrivateAddresses"],
   ["webFetch", "allowPrivateAddresses"],
 ];
 
 const ALLOW_LOCAL_FILES_PATHS: string[][] = [
-  ["unslothWebTools", "allowLocalFiles"],
+  ["piLightpanda", "allowLocalFiles"],
   ["webFetch", "allowLocalFiles"],
 ];
 
-const TRANSPORT_PATHS: string[][] = [
-  ["unslothWebTools", "transport"],
-  ["webFetch", "transport"],
-];
-
-const TRANSPORT_VALUES: ReadonlySet<string> = new Set(["tls-first", "direct-first", "off"]);
-
 const LIGHTPANDA_ENABLED_PATHS: string[][] = [
-  ["unslothWebTools", "lightpandaEnabled"],
+  ["piLightpanda", "lightpandaEnabled"],
   ["webRender", "lightpandaEnabled"],
 ];
 
 const LIGHTPANDA_PATH_PATHS: string[][] = [
-  ["unslothWebTools", "lightpandaPath"],
+  ["piLightpanda", "lightpandaPath"],
   ["webRender", "lightpandaPath"],
 ];
 
 const LIGHTPANDA_COMMAND_PATHS: string[][] = [
-  ["unslothWebTools", "lightpandaCommand"],
+  ["piLightpanda", "lightpandaCommand"],
   ["webRender", "lightpandaCommand"],
 ];
 
 const ENGINE_WEIGHTS_PATHS: string[][] = [
-  ["unslothWebTools", "engineWeights"],
+  ["piLightpanda", "engineWeights"],
   ["webSearch", "engineWeights"],
 ];
 
 const MAX_PER_HOST_PATHS: string[][] = [
-  ["unslothWebTools", "maxPerHost"],
+  ["piLightpanda", "maxPerHost"],
   ["webSearch", "maxPerHost"],
 ];
 
 const ENGINE_PATHS: string[][] = [
-  ["unslothWebTools", "engines"],
+  ["piLightpanda", "engines"],
   ["webSearch", "engines"],
-];
-
-const LIGHTPANDA_FALLBACK_PATHS: string[][] = [
-  ["unslothWebTools", "lightpandaFallback"],
-  ["webSearch", "lightpandaFallback"],
 ];
 
 function clampMaxResults(value: number): number {
@@ -206,35 +190,24 @@ export async function loadDefaultMaxResults(cwd?: string): Promise<number> {
 
 export async function loadSearchSettings(cwd?: string): Promise<{
   engines: string[] | undefined;
-  lightpandaFallback: boolean | undefined;
   sourceFile: string | null;
 }> {
   let engines: string[] | undefined;
-  let lightpandaFallback: boolean | undefined;
   let sourceFile: string | null = null;
   for (const file of settingsFiles(cwd)) {
     const data = await readJson(file);
     if (!data) continue;
-    const enginesCandidate = pickStringArray(data, ENGINE_PATHS);
-    if (enginesCandidate !== undefined) {
-      engines = enginesCandidate;
-      sourceFile = file;
-    }
-    const fallbackCandidate = pickBoolean(data, LIGHTPANDA_FALLBACK_PATHS);
-    if (fallbackCandidate !== undefined) {
-      lightpandaFallback = fallbackCandidate;
+    const candidate = pickStringArray(data, ENGINE_PATHS);
+    if (candidate !== undefined) {
+      engines = candidate;
       sourceFile = file;
     }
   }
-  return { engines, lightpandaFallback, sourceFile };
+  return { engines, sourceFile };
 }
 
 export async function loadDefaultEngines(cwd?: string): Promise<string[] | undefined> {
   return (await loadSearchSettings(cwd)).engines;
-}
-
-export async function loadSearchLightpandaFallback(cwd?: string): Promise<boolean | undefined> {
-  return (await loadSearchSettings(cwd)).lightpandaFallback;
 }
 
 export async function loadDefaultEngineWeights(cwd?: string): Promise<Record<string, number> | undefined> {
@@ -272,13 +245,11 @@ export async function loadDefaultFetchSettings(cwd?: string): Promise<{
   timeoutMs?: number;
   allowPrivateAddresses: boolean;
   allowLocalFiles: boolean;
-  transport: FetchTransport;
 }> {
   let maxChars: number | undefined;
   let timeoutMs: number | undefined;
   let allowPrivateAddresses = true;
   let allowLocalFiles = true;
-  let transport: FetchTransport = "tls-first";
   for (const data of await settingsEntries(cwd)) {
     const c = pickNumber(data, FETCH_MAX_CHARS_PATHS);
     if (c !== undefined && c > 0) maxChars = c;
@@ -288,10 +259,8 @@ export async function loadDefaultFetchSettings(cwd?: string): Promise<{
     if (p !== undefined) allowPrivateAddresses = p;
     const l = pickBoolean(data, ALLOW_LOCAL_FILES_PATHS);
     if (l !== undefined) allowLocalFiles = l;
-    const mode = pickString(data, TRANSPORT_PATHS);
-    if (mode !== undefined && TRANSPORT_VALUES.has(mode)) transport = mode as FetchTransport;
   }
-  return { maxChars, timeoutMs, allowPrivateAddresses, allowLocalFiles, transport };
+  return { maxChars, timeoutMs, allowPrivateAddresses, allowLocalFiles };
 }
 
 export async function loadLightpandaSettings(cwd?: string): Promise<{

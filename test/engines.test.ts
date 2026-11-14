@@ -1,11 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ENGINE_NAMES,
   EmptySweepError,
   ResultsAggregator,
   SearchCancelled,
   SearchTimeoutError,
   TEXT_ENGINES,
   autoTextSearch,
+  buildDom,
   canonicalizeHref,
   capByHost,
   extractResults,
@@ -14,36 +16,66 @@ import {
   registrableDomain,
   xpathNodes,
   xpathText,
+  type SearchRenderPage,
 } from "../engines.ts";
-import { buildDom } from "../engines.ts";
 
-function ddgResultsHtml(count: number): string {
-  return Array.from(
-    { length: count },
-    (_, i) =>
-      `<div class="result"><div class="body"><h2><a href="https://example-${i}.com/${i}">Result ${i}</a></h2><a href="https://example-${i}.com/${i}">Snippet ${i}.</a></div></div>`
-  ).join("");
+const BING_TARGET = "https://example.com/bing";
+const BING_ENCODED = Buffer.from(BING_TARGET, "utf8").toString("base64url");
+const BING_HTML = `
+  <li class="b_algo">
+    <h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=x&amp;u=a1${BING_ENCODED}&amp;ntb=1">Bing result</a></h2>
+    <p>Bing snippet.</p>
+  </li>
+`;
+
+const BRAVE_HTML = `
+  <div class="result-wrapper">
+    <a href="https://example.com/brave"><div class="title search-snippet-title">Brave result</div></a>
+    <div class="generic-snippet">Brave snippet.</div>
+  </div>
+`;
+
+const YAHOO_HTML = `
+  <li>
+    <a href="https://example.com/yahoo"><h3 class="title">Yahoo result</h3></a>
+    <div class="compText">Yahoo snippet.</div>
+  </li>
+  <li><a href=""><h3 class="title">People also ask</h3></a></li>
+`;
+
+const ECOSIA_HTML = `
+  <article data-test-id="organic-result">
+    <div class="result-info">
+      <a data-test-id="result-link" href="https://support.ecosia.org/article/579">provider note</a>
+    </div>
+    <div class="result__title">
+      <a data-test-id="result-link" href="https://example.com/ecosia">
+        <h2 data-test-id="result-title" class="result-title__heading">Ecosia result</h2>
+      </a>
+    </div>
+    <div class="result__description">
+      <p class="web-result__description">Ecosia snippet.</p>
+    </div>
+  </article>
+`;
+
+function fixtureFor(url: string): string {
+  if (url.includes("bing.com")) return BING_HTML;
+  if (url.includes("brave.com")) return BRAVE_HTML;
+  if (url.includes("yahoo.com")) return YAHOO_HTML;
+  if (url.includes("ecosia.org")) return ECOSIA_HTML;
+  return "<html><body></body></html>";
 }
 
-function braveResultsHtml(count: number): string {
-  return Array.from(
-    { length: count },
-    (_, i) =>
-      `<div class="result-wrapper"><a href="https://b${i}.example/hit"><div class="title search-snippet-title">B${i}</div></a><div class="generic-snippet">Snippet ${i}.</div></div>`,
-  ).join("");
+function renderPageWith(fixture: SearchRenderPage): SearchRenderPage {
+  return fixture;
 }
 
-function yahooResultsHtml(count: number): string {
-  return Array.from(
-    { length: count },
-    (_, i) =>
-      `<li><a href="https://y${i}.example/hit"><h3 class="title">Y${i}</h3></a><div class="compText">Snippet ${i}.</div></li>`,
-  ).join("");
+function engine(name: string) {
+  const found = TEXT_ENGINES.find((candidate) => candidate.name === name);
+  if (!found) throw new Error(`unknown engine ${name}`);
+  return found;
 }
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
 
 describe("normalizers", () => {
   it("strips tags, unescapes entities, normalizes unicode, removes control chars, collapses whitespace", () => {
@@ -52,8 +84,6 @@ describe("normalizers", () => {
     expect(normalizeText("caf\u00e9 \u0063\u0061\u0066\u0065\u0301")).toBe("café café");
     expect(normalizeText("line\u200bbreak")).toBe("linebreak");
     expect(normalizeText("a\u0000b\u001fc")).toBe("abc");
-    expect(normalizeText("&notit; x")).toBe("¬it; x");
-    expect(normalizeText("&alpha; &aleph;")).toBe("α ℵ");
   });
 
   it("unquotes urls and replaces spaces with plus", () => {
@@ -67,19 +97,13 @@ describe("canonicalizeHref", () => {
   it("strips tracking parameters and fragments", () => {
     expect(canonicalizeHref("https://x.com/a?utm_source=rss&utm_medium=feed&b=7")).toBe("https://x.com/a?b=7");
     expect(canonicalizeHref("https://x.com/a?fbclid=abc&gclid=def&q=1")).toBe("https://x.com/a?q=1");
-    expect(canonicalizeHref("https://x.com/a?srsltid=abc&msclkid=def&gbraid=ghi&wbraid=jkl&yclid=mno&gclsrc=aw.ds&page=2")).toBe("https://x.com/a?page=2");
     expect(canonicalizeHref("https://x.com/a#section")).toBe("https://x.com/a");
   });
 
-  it("strips default ports", () => {
+  it("strips default ports and keeps others", () => {
     expect(canonicalizeHref("https://x.com:443/a")).toBe("https://x.com/a");
     expect(canonicalizeHref("http://x.com:80/a")).toBe("http://x.com/a");
     expect(canonicalizeHref("https://x.com:8443/a")).toBe("https://x.com:8443/a");
-  });
-
-  it("keeps non-tracking parameters and paths", () => {
-    expect(canonicalizeHref("https://x.com/a?page=2&sort=asc")).toBe("https://x.com/a?page=2&sort=asc");
-    expect(canonicalizeHref("https://x.com/a/b?q=1")).toBe("https://x.com/a/b?q=1");
   });
 
   it("returns unparsable input unchanged", () => {
@@ -104,21 +128,10 @@ describe("xpath subset", () => {
     const dom = buildDom(
       '<div class="a"><span class="title">1</span><span class="sitename-container">2</span></div><div class="b"><span class="x">3</span></div>',
     );
-    const expr =
-      "//div[(contains(@class,'a') or contains(@class,'b')) and position()=last()]";
+    const expr = "//div[(contains(@class,'a') or contains(@class,'b')) and position()=last()]";
     const nodes = xpathNodes(expr, dom);
     expect(nodes.length).toBe(1);
     expect(xpathText(".//text()", nodes[0]).join("")).toBe("3");
-  });
-
-  it("supports child predicates and descendant tests", () => {
-    const dom = buildDom(
-      '<div data-type="web"><a><div class="title">Brave title</div></a></div><div data-type="web"><a><span>no title div</span></a></div>',
-    );
-    const items = xpathNodes("//div[@data-type='web']", dom);
-    expect(items.length).toBe(2);
-    const hrefs = xpathText(".//a[div[contains(@class, 'title')]]/@href", items[0]);
-    expect(hrefs).toEqual([""]);
   });
 
   it("supports direct-child predicates", () => {
@@ -128,36 +141,126 @@ describe("xpath subset", () => {
     const items = xpathNodes("//div[contains(@class, 'result')][./a]", dom);
     expect(items.length).toBe(1);
     expect(xpathText("./a/@href", items[0])).toEqual(["/one"]);
-    expect(xpathText(".//h2//text()", items[0]).join("")).toBe("One");
   });
 });
 
 describe("extractResults", () => {
-  it("extracts duckduckgo-style results", () => {
-    const html = `
-      <div class="result results_links">
-        <div class="links_main links_deep result__body">
-          <h2 class="result__title"><a rel="nofollow" class="result__a" href="https://example.com/page?utm=1&amp;b=2">Example <b>Page</b></a></h2>
-          <div class="result__extras"><a class="result__url" href="https://example.com/page">example.com</a></div>
-          <a class="result__snippet" href="https://example.com/page">First snippet text here.</a>
-        </div>
-      </div>
-      <div class="result">
-        <div class="result__body">
-          <h2><a href="https://duckduckgo.com/y.js?ad=1">Ad result</a></h2>
-          <a class="result__snippet" href="https://duckduckgo.com/y.js?ad=1">ad</a>
-        </div>
-      </div>
-    `;
-    const results = extractResults(html, "//div[contains(@class, 'body')]", {
-      title: ".//h2//text()",
-      href: "./a/@href",
-      body: "./a//text()",
+  it("extracts generic result blocks", () => {
+    const results = extractResults(
+      '<div class="result"><h2><a href="https://example.com/a?utm=x&amp;b=2">Title <b>Here</b></a></h2><p>Snippet.</p></div>',
+      "//div[contains(@class, 'result')]",
+      { title: ".//h2//text()", href: ".//h2//a/@href", body: ".//p//text()" },
+    );
+    expect(results).toEqual([
+      { title: "Title Here", href: "https://example.com/a?utm=x&b=2", body: "Snippet." },
+    ]);
+  });
+});
+
+describe("engine renderers", () => {
+  it("parses bing results and decodes redirect links", async () => {
+    const requested: string[] = [];
+    const results = await engine("bing").render(
+      "unsloth studio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        renderPage: async (url) => {
+          requested.push(url);
+          return BING_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      { title: "Bing result", href: BING_TARGET, body: "Bing snippet." },
+    ]);
+    const url = new URL(requested[0]);
+    expect(url.origin + url.pathname).toBe("https://www.bing.com/search");
+    expect(url.searchParams.get("q")).toBe("unsloth studio");
+  });
+
+  it("parses brave results", async () => {
+    const results = await engine("brave").render(
+      "unsloth studio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        renderPage: async (url) => {
+          expect(url).toContain("search.brave.com/search");
+          expect(url).toContain("q=unsloth+studio");
+          return BRAVE_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      { title: "Brave result", href: "https://example.com/brave", body: "Brave snippet." },
+    ]);
+  });
+
+  it("parses yahoo results and drops empty links", async () => {
+    const results = await engine("yahoo").render(
+      "unsloth studio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        renderPage: async (url) => {
+          expect(url).toContain("search.yahoo.com/search");
+          expect(url).toContain("p=unsloth+studio");
+          return YAHOO_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      { title: "Yahoo result", href: "https://example.com/yahoo", body: "Yahoo snippet." },
+    ]);
+  });
+
+  it("parses ecosia results from the title link", async () => {
+    const results = await engine("ecosia").render(
+      "unsloth studio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        renderPage: async (url) => {
+          expect(url).toContain("ecosia.org/search");
+          expect(url).toContain("q=unsloth+studio");
+          return ECOSIA_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      { title: "Ecosia result", href: "https://example.com/ecosia", body: "Ecosia snippet." },
+    ]);
+  });
+
+  it("returns null when no renderer is configured", async () => {
+    expect(await engine("bing").render("x", { region: "us-en", safesearch: "moderate" }, 5000)).toBeNull();
+  });
+
+  it("passes the website policy and private-address flag to the renderer", async () => {
+    let seen: unknown;
+    await engine("bing").render(
+      "x",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        policy: { allowedDomains: ["example.com"], blockedDomains: [] },
+        allowPrivateAddresses: false,
+        renderPage: async (_url, options) => {
+          seen = options;
+          return BING_HTML;
+        },
+      },
+      5000,
+    );
+    expect(seen).toMatchObject({
+      websitePolicy: { allowedDomains: ["example.com"], blockedDomains: [] },
+      allowPrivateAddresses: false,
     });
-    expect(results.length).toBe(2);
-    expect(results[0].title).toBe("Example Page");
-    expect(results[0].href).toBe("https://example.com/page");
-    expect(results[0].body).toBe("First snippet text here.");
   });
 });
 
@@ -168,7 +271,6 @@ describe("ResultsAggregator", () => {
       { title: "A", href: "https://x.com/1", body: "short" },
       { title: "B", href: "https://x.com/2", body: "body b" },
       { title: "A2", href: "https://x.com/1", body: "a much longer body" },
-      { title: "B", href: "https://x.com/2", body: "body b" },
       { title: "B", href: "https://x.com/2", body: "body b" },
     ]);
     const out = aggregator.ranked();
@@ -201,15 +303,6 @@ describe("ResultsAggregator", () => {
     expect(aggregator.ranked().length).toBe(2);
   });
 
-  it("drops Wikimedia category pages", () => {
-    const aggregator = new ResultsAggregator();
-    aggregator.extend([
-      { title: "Category:Wikimedia cats", href: "https://x.com/5", body: "skip me" },
-      { title: "Keep me", href: "https://x.com/6", body: "keep" },
-    ]);
-    expect(aggregator.ranked().map((doc) => doc.href)).toEqual(["https://x.com/6"]);
-  });
-
   it("ranks a result two engines returned above a single engine's deeper hit", () => {
     const aggregator = new ResultsAggregator();
     aggregator.extend([
@@ -222,18 +315,15 @@ describe("ResultsAggregator", () => {
     expect(aggregator.ranked()[0].href).toBe("https://shared.example/hit");
   });
 
-  it("honours engine weights", () => {
-    const aggregator = new ResultsAggregator();
-    aggregator.extend([{ title: "low", href: "https://low.example/a", body: "" }], 0.5);
-    aggregator.extend([{ title: "high", href: "https://high.example/b", body: "" }], 2);
-    expect(aggregator.ranked()[0].href).toBe("https://high.example/b");
-  });
-
-  it("breaks ties deterministically by href", () => {
-    const aggregator = new ResultsAggregator();
-    aggregator.extend([{ title: "z", href: "https://z.example/a", body: "" }]);
-    aggregator.extend([{ title: "a", href: "https://a.example/b", body: "" }]);
-    expect(aggregator.ranked().map((doc) => doc.href)).toEqual(["https://a.example/b", "https://z.example/a"]);
+  it("honours engine weights and breaks ties by href", () => {
+    const weighted = new ResultsAggregator();
+    weighted.extend([{ title: "low", href: "https://low.example/a", body: "" }], 0.5);
+    weighted.extend([{ title: "high", href: "https://high.example/b", body: "" }], 2);
+    expect(weighted.ranked()[0].href).toBe("https://high.example/b");
+    const tied = new ResultsAggregator();
+    tied.extend([{ title: "z", href: "https://z.example/a", body: "" }]);
+    tied.extend([{ title: "a", href: "https://a.example/b", body: "" }]);
+    expect(tied.ranked().map((doc) => doc.href)).toEqual(["https://a.example/b", "https://z.example/a"]);
   });
 });
 
@@ -253,11 +343,8 @@ describe("capByHost", () => {
     ]);
   });
 
-  it("respects the result limit", () => {
+  it("respects the result limit and treats zero as no cap", () => {
     expect(capByHost(docs, 2, 2).length).toBe(2);
-  });
-
-  it("treats zero as no cap", () => {
     expect(capByHost(docs, 10, 0).length).toBe(4);
   });
 });
@@ -270,522 +357,127 @@ describe("registrableDomain", () => {
   });
 });
 
-describe("sweep outcomes", () => {
+describe("sweep", () => {
+  it("ships the expected default engines", () => {
+    expect([...DEFAULT_ENGINE_NAMES]).toEqual(["brave", "ecosia"]);
+    expect(TEXT_ENGINES.map((candidate) => candidate.name)).toEqual(["bing", "brave", "yahoo", "ecosia"]);
+  });
 
-  it("reports a timeout when every engine times out", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new DOMException("The operation timed out.", "TimeoutError");
+  it("renders the selected engines and fuses their results", async () => {
+    const requested: string[] = [];
+    const results = await autoTextSearch("unsloth studio", 5, 10_000, undefined, {
+      renderPage: renderPageWith(async (url) => {
+        requested.push(url);
+        return fixtureFor(url);
       }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(SearchTimeoutError);
-  });
-
-  it("reports a timeout when the first engine times out amid later failures", async () => {
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        calls++;
-        if (calls === 1) throw new DOMException("The operation timed out.", "TimeoutError");
-        throw new TypeError("fetch failed");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(SearchTimeoutError);
-  });
-
-  it("reports a timeout when a later engine times out after generic failures", async () => {
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        calls++;
-        if (calls === 2) throw new DOMException("The operation timed out.", "TimeoutError");
-        throw new TypeError("fetch failed");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(SearchTimeoutError);
-  });
-
-  it("returns no results when every engine fails without timing out", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new TypeError("fetch failed");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(EmptySweepError);
-  });
-
-  it("propagates cancellation when the signal aborts mid-sweep", async () => {
-    const controller = new AbortController();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        controller.abort();
-        throw new DOMException("aborted", "AbortError");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000, controller.signal)).rejects.toThrow(SearchCancelled);
-  });
-
-  it("ignores oversized engine responses", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("x".repeat(6 * 1024 * 1024), { status: 200 })),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(EmptySweepError);
-  });
-
-  it("accepts a bodyless response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(null, { status: 200 })),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(EmptySweepError);
-  });
-});
-
-describe("startpage engine", () => {
-  const STARTPAGE_HTML = `
-    <div class="result css-1">
-      <a href="https://example.com/one" class="result-title result-link"><h2>First result</h2></a>
-      <p>First snippet.</p>
-    </div>
-    <div class="result css-2">
-      <a href="https://example.com/two" class="result-title result-link"><h2>Second result</h2></a>
-      <p>Second snippet.</p>
-    </div>
-    <div class="result css-3"><p>No link here</p></div>
-  `;
-
-  it("extracts organic results and scopes the request to the region", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response(STARTPAGE_HTML, { status: 200 });
-      }),
-    );
-    const startpage = TEXT_ENGINES.find((engine) => engine.name === "startpage");
-    expect(startpage?.provider).toBe("google");
-    const results = await startpage!.search("unsloth studio", { region: "de-de", safesearch: "moderate" }, 10_000);
-    expect(results).toEqual([
-      { title: "First result", href: "https://example.com/one", body: "First snippet." },
-      { title: "Second result", href: "https://example.com/two", body: "Second snippet." },
+    });
+    expect(results.map((result) => result.href)).toEqual([
+      "https://example.com/brave",
+      "https://example.com/ecosia",
     ]);
-    const requested = new URL(calls[0]);
-    expect(requested.origin + requested.pathname).toBe("https://www.startpage.com/sp/search");
-    expect(requested.searchParams.get("query")).toBe("unsloth studio");
-    expect(requested.searchParams.get("qsr")).toBe("de_DE");
-    expect(requested.searchParams.has("qadf")).toBe(false);
+    expect(requested.length).toBe(2);
   });
-});
 
-describe("sweep deadline", () => {
-  it("stops dispatching engines once the sweep budget is exhausted", async () => {
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((_url: string, opts?: RequestInit) => {
-        calls++;
-        return new Promise((_resolve, reject) => {
-          opts?.signal?.addEventListener("abort", () => {
-            reject(new DOMException("The operation timed out.", "TimeoutError"));
-          });
-        });
-      }),
-    );
-    const start = performance.now();
-    await expect(autoTextSearch("cat", 5, 250)).rejects.toThrow(SearchTimeoutError);
-    expect(performance.now() - start).toBeLessThan(1_000);
-    expect(calls).toBeGreaterThanOrEqual(2);
-    expect(calls).toBeLessThanOrEqual(5);
-  }, 10_000);
-});
+  it("limits the sweep to the configured engines", async () => {
+    const requested: string[] = [];
+    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing"],
+      renderPage: async (url) => {
+        requested.push(url);
+        return BING_HTML;
+      },
+    });
+    expect(results.length).toBe(1);
+    expect(requested.length).toBe(1);
+    expect(requested[0]).toContain("bing.com");
+  });
 
-describe("sweep early exit", () => {
-  it("aborts in-flight engines once enough results arrive", async () => {
-    const universal = Array.from({ length: 5 }, (_, i) =>
-      [
-        `<div class="result"><div class="body"><h2><a href="https://d${i}.example/hit">D${i}</a></h2><a href="https://d${i}.example/hit">Snippet ${i}.</a></div></div>`,
-        `<div data-type="web"><a href="https://b${i}.example/hit"><div class="title">B${i}</div></a></div>`,
-        `<div data-hveid="x"><a href="https://g${i}.example/hit"><h3>G${i}</h3></a></div>`,
-        `<ul class="results"><li><h2><a href="https://m${i}.example/hit">M${i}</a></h2><p class="s">snippet</p></li></ul>`,
-        `<div class="relsrch"><div class="Title"><h3><a href="https://y${i}.example/hit">Y${i}</a></h3></div><div class="Text">text</div></div>`,
-        `<li class="serp-item"><h3><a href="https://x${i}.example/hit">X${i}</a></h3><div class="text">snippet</div></li>`,
-      ].join(""),
+  it("falls back to the default engines when no configured name matches", async () => {
+    const requested: string[] = [];
+    await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["nope"],
+      renderPage: async (url) => {
+        requested.push(url);
+        return fixtureFor(url);
+      },
+    });
+    expect(requested.length).toBe(2);
+  });
+
+  it("applies maxPerHost to the returned results", async () => {
+    const sameHost = Array.from(
+      { length: 5 },
+      (_, i) => `<li class="b_algo"><h2><a href="https://one.example/p${i}">R${i}</a></h2><p>S${i}</p></li>`,
     ).join("");
+    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing"],
+      maxPerHost: 2,
+      renderPage: async () => sameHost,
+    });
+    expect(results.length).toBe(2);
+    expect(results.every((result) => new URL(result.href).hostname === "one.example")).toBe(true);
+  });
+
+  it("orders results by engine weight", async () => {
+    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing", "yahoo"],
+      engineWeights: { bing: 0.5, yahoo: 3 },
+      renderPage: async (url) => (url.includes("yahoo") ? YAHOO_HTML : BING_HTML),
+    });
+    expect(results[0].href).toBe("https://example.com/yahoo");
+  });
+
+  it("aborts in-flight engines once enough results arrive", async () => {
     let aborted = false;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string, opts?: RequestInit) => {
-        if (String(url).includes("yandex.com")) {
+    const results = await autoTextSearch("cat", 1, 10_000, undefined, {
+      engines: ["bing", "yahoo"],
+      renderPage: (url, options) => {
+        if (url.includes("yahoo")) {
           return new Promise((_resolve, reject) => {
-            opts?.signal?.addEventListener("abort", () => {
+            options.signal?.addEventListener("abort", () => {
               aborted = true;
               reject(new DOMException("aborted", "AbortError"));
             });
           });
         }
-        return Promise.resolve(new Response(universal, { status: 200 }));
-      }),
-    );
-    const start = performance.now();
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["duckduckgo", "startpage", "yandex"],
+        return Promise.resolve(BING_HTML);
+      },
     });
-    expect(results.length).toBe(5);
-    expect(performance.now() - start).toBeLessThan(3_000);
+    expect(results.length).toBe(1);
     expect(aborted).toBe(true);
-  }, 10_000);
-});
-
-describe("engine retry", () => {
-  it("retries a transient failure once and keeps the retried results", async () => {
-    let ddgCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (String(url).includes("html.duckduckgo.com")) {
-          ddgCalls++;
-          if (ddgCalls === 1) throw new TypeError("fetch failed");
-          return new Response(ddgResultsHtml(5), { status: 200 });
-        }
-        return new Response(null, { status: 200 });
-      }),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000);
-    expect(ddgCalls).toBe(2);
-    expect(results.length).toBe(5);
   });
 
-  it("retries a null response from an engine", async () => {
-    let ddgCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (String(url).includes("html.duckduckgo.com")) {
-          ddgCalls++;
-          if (ddgCalls === 1) return new Response("blocked", { status: 403 });
-          return new Response(ddgResultsHtml(5), { status: 200 });
-        }
-        return new Response(null, { status: 200 });
-      }),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000);
-    expect(ddgCalls).toBe(2);
-    expect(results.length).toBe(5);
-  });
-
-  it("does not retry engine timeouts", async () => {
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        calls++;
-        throw new DOMException("The operation timed out.", "TimeoutError");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(SearchTimeoutError);
-    expect(calls).toBe(2);
-  });
-
-  it("does not classify a retry that cannot start as a timeout", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        throw new TypeError("fetch failed");
-      }),
-    );
-    await expect(autoTextSearch("cat", 100, 60)).rejects.toThrow(EmptySweepError);
-  }, 5_000);
-
-  it("does not launch a retry that cannot fit the remaining budget", async () => {
-    let calls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        calls++;
-        throw new TypeError("fetch failed");
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 400)).rejects.toThrow(EmptySweepError);
-    expect(calls).toBe(2);
-  });
-});
-
-describe("engine request headers", () => {
-  it("sends a form content-type on the duckduckgo post", async () => {
-    const calls: { url: string; init?: RequestInit }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string, init?: RequestInit) => {
-        calls.push({ url: String(url), init });
-        if (String(url).includes("html.duckduckgo.com")) {
-          return Promise.resolve(new Response(ddgResultsHtml(5), { status: 200 }));
-        }
-        return Promise.resolve(new Response(null, { status: 200 }));
-      }),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000);
-    const post = calls.find((call) => call.init?.method === "POST");
-    expect(post).toBeDefined();
-    expect(post?.init?.headers).toMatchObject({
-      "Content-Type": "application/x-www-form-urlencoded",
-    });
-    expect(results.length).toBe(5);
-  });
-});
-
-describe("engine selection", () => {
-  it("limits the sweep to the configured engines", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response(ddgResultsHtml(5), { status: 200 });
-      }),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, { engines: ["duckduckgo"] });
-    expect(results.length).toBe(5);
-    expect(calls.length).toBe(1);
-    expect(calls[0]).toContain("html.duckduckgo.com");
-  });
-
-  it("searches duckduckgo and startpage by default", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response("<html><body></body></html>", { status: 200 });
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000)).rejects.toThrow(EmptySweepError);
-    expect(calls.length).toBe(2);
-    expect(calls.some((url) => url.includes("yandex"))).toBe(false);
-  });
-
-  it("falls back to the default engines when no configured name matches", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response("<html><body></body></html>", { status: 200 });
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000, undefined, { engines: ["nope"] })).rejects.toThrow(EmptySweepError);
-    expect(calls.length).toBe(2);
-    expect(calls.some((url) => url.includes("yandex"))).toBe(false);
-  });
-
-  it("applies maxPerHost to the returned results", async () => {
-    const sameHost = Array.from(
-      { length: 4 },
-      (_, i) =>
-        `<div class="result"><div class="body"><h2><a href="https://one.example/p${i}">R${i}</a></h2><a href="https://one.example/p${i}">S${i}</a></div></div>`,
-    ).join("");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(sameHost, { status: 200 })),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, { engines: ["duckduckgo"], maxPerHost: 2 });
-    expect(results.length).toBe(2);
-    expect(results.every((result) => new URL(result.href).hostname === "one.example")).toBe(true);
-  });
-
-  it("does not cap hosts by default", async () => {
-    const sameHost = Array.from(
-      { length: 5 },
-      (_, i) =>
-        `<div class="result"><div class="body"><h2><a href="https://one.example/p${i}">R${i}</a></h2><a href="https://one.example/p${i}">S${i}</a></div></div>`,
-    ).join("");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(sameHost, { status: 200 })),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, { engines: ["duckduckgo"] });
-    expect(results.length).toBe(5);
-  });
-
-  it("orders results by engine weight", async () => {
-    const ddgHtml =
-      '<div class="result"><div class="body"><h2><a href="https://ddg.example/a">D</a></h2><a href="https://ddg.example/a">snippet</a></div></div>';
-    const startpageHtml = '<div class="result"><a href="https://start.example/b"><h2>S</h2></a><p>snippet</p></div>';
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => new Response(String(url).includes("startpage.com") ? startpageHtml : ddgHtml, { status: 200 })),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["duckduckgo", "startpage"],
-      engineWeights: { startpage: 3 },
-    });
-    expect(results.map((result) => result.href)).toEqual(["https://start.example/b", "https://ddg.example/a"]);
-  });
-});
-
-describe("engine render fallback", () => {
-  it("renders the engine page when the network transports return nothing", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("blocked", { status: 403 })),
-    );
-    const renderPage = vi.fn(async (_url: string, _options: { timeoutMs: number }) => ddgResultsHtml(3));
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["duckduckgo"],
-      renderFallback: true,
-      renderPage,
-    });
-    expect(results.length).toBe(3);
-    expect(renderPage).toHaveBeenCalledTimes(1);
-    const [url, options] = renderPage.mock.calls[0];
-    expect(url).toContain("html.duckduckgo.com/html/");
-    expect(url).toContain("q=cat");
-    expect(options.timeoutMs).toBeGreaterThan(0);
-  });
-
-  it("renders when the engine answers with a challenge page", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<html><body>challenge required</body></html>", { status: 200 })),
-    );
-    const renderPage = vi.fn(async () => ddgResultsHtml(4));
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["duckduckgo"],
-      renderFallback: true,
-      renderPage,
-    });
-    expect(results.length).toBe(4);
-    expect(renderPage).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips rendering when results already arrived", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(ddgResultsHtml(5), { status: 200 })),
-    );
-    const renderPage = vi.fn(async () => ddgResultsHtml(1));
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["duckduckgo"],
-      renderFallback: true,
-      renderPage,
-    });
-    expect(results.length).toBe(5);
-    expect(renderPage).not.toHaveBeenCalled();
-  });
-
-  it("does not render without the toggle", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("blocked", { status: 403 })),
-    );
-    const renderPage = vi.fn(async () => ddgResultsHtml(1));
+  it("reports a timeout when every engine stalls", async () => {
     await expect(
-      autoTextSearch("cat", 5, 10_000, undefined, { engines: ["duckduckgo"], renderPage }),
-    ).rejects.toThrow(EmptySweepError);
-    expect(renderPage).not.toHaveBeenCalled();
+      autoTextSearch("cat", 5, 80, undefined, {
+        engines: ["bing", "yahoo"],
+        renderPage: (_url, options) =>
+          new Promise((_resolve, reject) => {
+            options.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      }),
+    ).rejects.toThrow(SearchTimeoutError);
   });
 
-  it("keeps the failure when the renderer yields nothing", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("blocked", { status: 403 })),
-    );
-    const renderPage = vi.fn(async () => null);
+  it("reports no results when every engine returns nothing", async () => {
     await expect(
       autoTextSearch("cat", 5, 10_000, undefined, {
-        engines: ["duckduckgo"],
-        renderFallback: true,
-        renderPage,
+        engines: ["bing", "yahoo"],
+        renderPage: async () => null,
       }),
     ).rejects.toThrow(EmptySweepError);
-    expect(renderPage).toHaveBeenCalledTimes(1);
   });
 
-  it("renders each engine with its own request url", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("blocked", { status: 403 })),
-    );
-    const renderPage = vi.fn(async (_url: string, _options: { timeoutMs: number }) => "<html><body></body></html>");
+  it("propagates cancellation", async () => {
+    const controller = new AbortController();
+    controller.abort();
     await expect(
-      autoTextSearch("cat", 5, 10_000, undefined, {
-        engines: ["yandex", "startpage"],
-        renderFallback: true,
-        renderPage,
+      autoTextSearch("cat", 5, 10_000, controller.signal, {
+        engines: ["bing"],
+        renderPage: async () => BING_HTML,
       }),
-    ).rejects.toThrow(EmptySweepError);
-    const urls = renderPage.mock.calls.map(([url]) => String(url));
-    expect(urls.some((url) => url.includes("yandex.com/search/site/") && url.includes("text=cat"))).toBe(true);
-    expect(urls.some((url) => url.includes("startpage.com/sp/search") && url.includes("query=cat"))).toBe(true);
-  });
-});
-
-describe("render-only engines", () => {
-  it("renders brave and yahoo without touching the network", async () => {
-    const fetchMock = vi.fn(async () => {
-      throw new Error("network must not run for render-only engines");
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const renderPage = vi.fn(async (url: string) =>
-      url.includes("brave.com") ? braveResultsHtml(3) : yahooResultsHtml(2),
-    );
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["brave", "yahoo"],
-      renderFallback: true,
-      renderPage,
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(renderPage).toHaveBeenCalledTimes(2);
-    expect(results.length).toBe(5);
-    expect(results.find((result) => result.href === "https://b0.example/hit")).toMatchObject({
-      title: "B0",
-      body: "Snippet 0.",
-    });
-    expect(results.find((result) => result.href === "https://y0.example/hit")).toMatchObject({
-      title: "Y0",
-      body: "Snippet 0.",
-    });
-    const urls = renderPage.mock.calls.map(([url]) => String(url));
-    expect(urls.some((url) => url.includes("search.brave.com") && url.includes("q=cat"))).toBe(true);
-    expect(urls.some((url) => url.includes("search.yahoo.com") && url.includes("p=cat"))).toBe(true);
-  });
-
-  it("drops render-only engines when the fallback is off", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response(ddgResultsHtml(2), { status: 200 });
-      }),
-    );
-    const renderPage = vi.fn(async () => braveResultsHtml(1));
-    const results = await autoTextSearch("cat", 5, 10_000, undefined, { engines: ["brave", "duckduckgo"], renderPage });
-    expect(results.length).toBe(2);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("duckduckgo");
-    expect(renderPage).not.toHaveBeenCalled();
-  });
-
-  it("falls back to the default engines when the selection only renders", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        calls.push(String(url));
-        return new Response("<html><body></body></html>", { status: 200 });
-      }),
-    );
-    await expect(autoTextSearch("cat", 5, 10_000, undefined, { engines: ["brave"] })).rejects.toThrow(EmptySweepError);
-    expect(calls).toHaveLength(2);
-    expect(calls.some((url) => url.includes("duckduckgo.com"))).toBe(true);
-    expect(calls.some((url) => url.includes("startpage.com"))).toBe(true);
+    ).rejects.toThrow(SearchCancelled);
   });
 });

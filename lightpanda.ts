@@ -2,33 +2,47 @@ import { spawn as spawnProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { visibleChars } from "./html-to-md.ts";
+import { STATUS_CODES } from "node:http";
+import { pagePrefixedMarkdown, visibleChars } from "./html-to-md.ts";
 import {
   checkUrlAccess,
   MAX_SIGNAL_TIMEOUT_MS,
   normalizeUrlScheme,
   type WebsitePolicy,
 } from "./web-access.ts";
-import {
-  pagePrefixedMarkdown,
-  parseLocalPath,
-  resolveAndValidateHost,
-  TRUNCATED_BODY_NOTICE,
-  truncatePageText,
-  type ResolvedHost,
-} from "./web-fetch.ts";
+import { proxyForUrl } from "./proxy.ts";
 
 const DEFAULT_BINARY = "lightpanda";
 const DEFAULT_WAIT_UNTIL = "networkidle";
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_DUMP_BYTES = 4 * 1024 * 1024;
+const MAX_DUMP_BYTES = 16 * 1024 * 1024;
 const PROBE_TIMEOUT_MS = 5_000;
 const METADATA_LINE_RE = /^(?:Title|Author|Date|Site|URL|Rendered via): /;
 const PROVENANCE = "Rendered via Lightpanda (local browser; nothing sent to a third party).";
 const CANCELLED_MESSAGE = "Failed to render URL: cancelled.";
 const TIMED_OUT_MESSAGE = "Failed to render URL: timed out.";
-const LOCAL_FILE_MESSAGE = "Blocked: the local renderer cannot fetch local files.";
 const NO_TEXT_MESSAGE = "(page returned no readable text)";
+const PDF_MESSAGE = "(PDF content cannot be read by the local renderer)";
+const CHALLENGE_MESSAGE = "Failed to render URL: the page served a bot challenge instead of content.";
+const INTERSTITIAL_MAX_PROSE_CHARS = 4000;
+const INTERSTITIAL_MARKERS = [
+  "just a moment",
+  "attention required",
+  "you have been blocked",
+  "enable javascript and cookies to continue",
+  "checking if the site connection is secure",
+  "access denied",
+  "please enable cookies",
+  "cf-error-details",
+  "are you a robot",
+  "captcha",
+  "anomaly",
+  "anubis",
+  "unfortunately, bots use",
+  "complete the following challenge",
+  "select all squares",
+  "challenge required",
+];
 
 export type LightpandaDump = "html" | "markdown";
 export type LightpandaWaitUntil = "networkidle" | "load" | "domcontentloaded" | "done";
@@ -55,7 +69,6 @@ export type LightpandaSpawn = (
 
 export interface LightpandaRenderOptions {
   timeoutMs?: number;
-  maxChars?: number;
   signal?: AbortSignal;
   websitePolicy?: WebsitePolicy | null;
   settings?: LightpandaSettings | null;
@@ -63,8 +76,8 @@ export interface LightpandaRenderOptions {
   command?: string[] | null;
   dump?: LightpandaDump;
   waitUntil?: LightpandaWaitUntil;
+  allowPrivateAddresses?: boolean;
   spawn?: LightpandaSpawn;
-  resolve?: (hostname: string, signal?: AbortSignal, allowPrivateAddresses?: boolean) => Promise<ResolvedHost>;
 }
 
 interface RunResult {
@@ -76,6 +89,19 @@ interface RunResult {
   truncated: boolean;
   missing: boolean;
 }
+
+interface LightpandaJson {
+  url?: string;
+  http_status?: number;
+  headers?: { name?: string; value?: string }[];
+  content?: string;
+  error?: string | null;
+}
+
+type DumpOutcome =
+  | { ok: true; raw: string; contentType: string; finalUrl: string; status: number }
+  | { ok: false; message: string }
+  | null;
 
 const availability = new Map<string, Promise<boolean>>();
 
@@ -187,12 +213,35 @@ function runLightpanda(
   });
 }
 
-function bodyChars(text: string): number {
-  const body = text
-    .split("\n")
-    .filter((line) => !METADATA_LINE_RE.test(line))
-    .join("\n");
-  return visibleChars(body);
+function headerValue(headers: LightpandaJson["headers"], name: string): string {
+  for (const header of headers ?? []) {
+    if ((header.name ?? "").toLowerCase() === name) return header.value ?? "";
+  }
+  return "";
+}
+
+function failureFor(result: RunResult): string | null {
+  if (result.missing) return null;
+  if (result.cancelled) return CANCELLED_MESSAGE;
+  if (result.timedOut) return TIMED_OUT_MESSAGE;
+  if (result.truncated) return "Failed to render URL: the page exceeded the local renderer's dump limit.";
+  return null;
+}
+
+function httpError(status: number): string {
+  const reason = STATUS_CODES[status] ?? "";
+  return `Failed to fetch URL: HTTP ${status}${reason ? ` ${reason}` : ""}`;
+}
+
+function looksLikeMarkup(content: string, contentType: string): boolean {
+  if (contentType.includes("html") || contentType.includes("xml")) return true;
+  return content.trimStart().startsWith("<");
+}
+
+function looksLikeInterstitial(text: string): boolean {
+  if (visibleChars(text) > INTERSTITIAL_MAX_PROSE_CHARS) return false;
+  const lowered = text.toLowerCase();
+  return INTERSTITIAL_MARKERS.some((marker) => lowered.includes(marker));
 }
 
 function withProvenance(prefixed: string, url: string): string {
@@ -202,6 +251,14 @@ function withProvenance(prefixed: string, url: string): string {
   const header = [`URL: ${url}`, PROVENANCE];
   if (index === 0) return `${header.join("\n")}\n\n${prefixed}`;
   return [...lines.slice(0, index), ...header, ...lines.slice(index)].join("\n");
+}
+
+function bodyChars(text: string): number {
+  const body = text
+    .split("\n")
+    .filter((line) => !METADATA_LINE_RE.test(line))
+    .join("\n");
+  return visibleChars(body);
 }
 
 function installedLauncher(): string | null {
@@ -215,7 +272,7 @@ function installedLauncher(): string | null {
       return null;
     }
   }
-  const dir = join(dataHome, "pi-unsloth-webtools", "lightpanda");
+  const dir = join(dataHome, "pi-lightpanda-web", "lightpanda");
   for (const name of ["lightpanda-run", "lightpanda"]) {
     const candidate = join(dir, name);
     if (existsSync(candidate)) return candidate;
@@ -239,24 +296,45 @@ export function lightpandaLaunch(options: LightpandaRenderOptions = {}): string[
   return [lightpandaBinary(options)];
 }
 
-type LightpandaDumpOutcome =
-  | { ok: true; raw: string; truncated: boolean; normalized: string }
-  | { ok: false; message: string }
-  | null;
+function renderArgs(
+  normalized: string,
+  options: LightpandaRenderOptions,
+  timeoutMs: number,
+  dump: LightpandaDump,
+): string[] {
+  const args = [
+    "fetch",
+    "--json",
+    "--dump",
+    dump,
+    "--wait-until",
+    options.waitUntil ?? DEFAULT_WAIT_UNTIL,
+    "--http-timeout",
+    String(timeoutMs),
+    "--dump-max-bytes",
+    String(MAX_DUMP_BYTES),
+  ];
+  if (options.allowPrivateAddresses === false) args.push("--block-private-networks");
+  try {
+    const proxy = proxyForUrl(new URL(normalized));
+    if (proxy) args.push("--http-proxy", proxy);
+  } catch {}
+  args.push(normalized);
+  return args;
+}
 
-async function fetchLightpandaDump(
+async function fetchDump(
   url: string,
   options: LightpandaRenderOptions,
   dump: LightpandaDump,
-): Promise<LightpandaDumpOutcome> {
+): Promise<DumpOutcome> {
   if (options.settings && options.settings.enabled === false) return null;
   const target = typeof url === "string" ? url.trim() : "";
   const policy = options.websitePolicy ?? null;
   if (!target) return { ok: false, message: checkUrlAccess("", policy)[1] };
-  if (parseLocalPath(target) !== null) return { ok: false, message: LOCAL_FILE_MESSAGE };
   const normalized = normalizeUrlScheme(target);
-  const [allowed, reason, hostname] = checkUrlAccess(normalized, policy);
-  if (!allowed) return { ok: false, message: reason };
+  const access = checkUrlAccess(normalized, policy);
+  if (!access[0]) return { ok: false, message: access[1] };
   const launch = lightpandaLaunch(options);
   const spawn = options.spawn ?? (spawnProcess as unknown as LightpandaSpawn);
   if (!(await binaryAvailable(launch, spawn))) return null;
@@ -264,40 +342,40 @@ async function fetchLightpandaDump(
     MAX_SIGNAL_TIMEOUT_MS,
     Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)),
   );
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
-  const resolve = options.resolve ?? resolveAndValidateHost;
-  const resolved = await resolve(hostname, signal, false);
-  if (options.signal?.aborted) return { ok: false, message: CANCELLED_MESSAGE };
-  if (timeoutSignal.aborted) return { ok: false, message: TIMED_OUT_MESSAGE };
-  if (!resolved.ok) {
+  const result = await runLightpanda(launch, renderArgs(normalized, options, timeoutMs, dump), {
+    timeoutMs,
+    signal: options.signal,
+    spawn,
+  });
+  if (result.missing) return null;
+  const failure = failureFor(result);
+  if (failure) return { ok: false, message: failure };
+  if (result.code !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "";
     return {
       ok: false,
-      message: resolved.reason.startsWith("Blocked:") ? resolved.reason : `Failed to render URL: ${resolved.reason}`,
+      message: `Failed to render URL: Lightpanda exited with code ${result.code ?? "unknown"}${detail ? ` (${detail.slice(0, 200)})` : ""}.`,
     };
   }
-  const result = await runLightpanda(
-    launch,
-    [
-      "fetch",
-      "--dump",
-      dump,
-      "--wait-until",
-      options.waitUntil ?? DEFAULT_WAIT_UNTIL,
-      "--block-private-networks",
-      "--http-timeout",
-      String(timeoutMs),
-      normalized,
-    ],
-    { timeoutMs, signal: options.signal, spawn },
-  );
-  if (result.missing) return null;
-  if (result.cancelled) return { ok: false, message: CANCELLED_MESSAGE };
-  if (result.timedOut) return { ok: false, message: TIMED_OUT_MESSAGE };
-  if (result.code !== 0) {
-    return { ok: false, message: `Failed to render URL: Lightpanda exited with code ${result.code ?? "unknown"}.` };
+  let data: LightpandaJson;
+  try {
+    data = JSON.parse(result.stdout) as LightpandaJson;
+  } catch {
+    return { ok: false, message: "Failed to render URL: the local renderer returned unreadable output." };
   }
-  return { ok: true, raw: result.stdout, truncated: result.truncated, normalized };
+  if (data.error) {
+    return { ok: false, message: `Failed to render URL: ${data.error}.` };
+  }
+  const status = Number(data.http_status ?? 0);
+  if (status >= 400) return { ok: false, message: httpError(status) };
+  const contentType = headerValue(data.headers, "content-type").toLowerCase();
+  const finalUrl = data.url || normalized;
+  const finalAccess = checkUrlAccess(finalUrl, policy);
+  if (!finalAccess[0]) return { ok: false, message: finalAccess[1] };
+  if (contentType.includes("pdf")) return { ok: false, message: PDF_MESSAGE };
+  const content = data.content ?? "";
+  if (!content.trim()) return { ok: false, message: NO_TEXT_MESSAGE };
+  return { ok: true, raw: content, contentType, finalUrl, status };
 }
 
 export async function renderPageWithLightpanda(
@@ -305,26 +383,23 @@ export async function renderPageWithLightpanda(
   options: LightpandaRenderOptions = {},
 ): Promise<string | null> {
   const dump = options.dump ?? "html";
-  const fetched = await fetchLightpandaDump(url, options, dump);
+  const fetched = await fetchDump(url, options, dump);
   if (fetched === null) return null;
   if (!fetched.ok) return fetched.message;
   const rendered =
-    dump === "html"
-      ? pagePrefixedMarkdown(fetched.truncated ? fetched.raw + TRUNCATED_BODY_NOTICE : fetched.raw)
+    dump === "html" && looksLikeMarkup(fetched.raw, fetched.contentType)
+      ? pagePrefixedMarkdown(fetched.raw)
       : fetched.raw.trim();
   if (bodyChars(rendered) === 0) return NO_TEXT_MESSAGE;
-  const withHeader =
-    dump === "html" || !fetched.truncated
-      ? withProvenance(rendered, fetched.normalized)
-      : withProvenance(rendered + TRUNCATED_BODY_NOTICE, fetched.normalized);
-  return truncatePageText(withHeader, options.maxChars);
+  if (looksLikeInterstitial(rendered)) return CHALLENGE_MESSAGE;
+  return withProvenance(rendered, fetched.finalUrl);
 }
 
 export async function renderPageHtml(
   url: string,
   options: LightpandaRenderOptions = {},
 ): Promise<string | null> {
-  const fetched = await fetchLightpandaDump(url, options, "html");
+  const fetched = await fetchDump(url, options, "html");
   if (fetched === null || !fetched.ok) return null;
   const html = fetched.raw.trim();
   return html || null;

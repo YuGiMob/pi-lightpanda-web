@@ -1,53 +1,5 @@
-import type {
-  FetchSeams,
-  RawFetchOptions,
-  RawFetchResult,
-  ResolvedHost,
-} from "../web-fetch.ts";
-import { fetchPageText } from "../web-fetch.ts";
+import type { LightpandaSpawn } from "../lightpanda.ts";
 import { deflateSync } from "node:zlib";
-
-export function fakeResolve(ip = "93.184.216.34"): ResolvedHost {
-  return { ok: true, reason: "", ip, family: 4 };
-}
-
-export function seamWithResponse(
-  body: Buffer,
-  contentType: string | null,
-  status = 200,
-  extraHeaders: Record<string, string> = {},
-): FetchSeams {
-  const headers: Record<string, string> = { ...extraHeaders };
-  if (contentType !== null) headers["content-type"] = contentType;
-  return {
-    resolve: async () => fakeResolve(),
-    request: async () => ({ status, headers, body }),
-  };
-}
-
-export function fetchWith(
-  body: Buffer,
-  contentType: string | null,
-  options: {
-    timeoutMs?: number;
-    nowMs?: () => number;
-    maxBytes?: number;
-    maxPdfBytes?: number;
-    seams?: FetchSeams;
-  } = {},
-): Promise<string> {
-  return fetchPageText("https://example.com/thing", {
-    timeoutMs: options.timeoutMs ?? 5_000,
-    nowMs: options.nowMs,
-    maxBytes: options.maxBytes,
-    maxPdfBytes: options.maxPdfBytes,
-    seams: options.seams ?? seamFor(body, contentType),
-  });
-}
-
-function seamFor(body: Buffer, contentType: string | null): FetchSeams {
-  return seamWithResponse(body, contentType);
-}
 
 export interface PdfLine {
   text: string;
@@ -106,7 +58,97 @@ export function makePdf(
   );
 }
 
-export type RawFetchSeam = (
-  url: string,
-  options: RawFetchOptions,
-) => Promise<RawFetchResult>;
+export interface SpawnCall {
+  binary: string;
+  args: string[];
+}
+
+export interface SpawnSpec {
+  stdout?: string;
+  stderr?: string;
+  code?: number | null;
+  errorCode?: string;
+  neverClose?: boolean;
+}
+
+export function makeSpawn(handler: (call: SpawnCall) => SpawnSpec) {
+  const calls: SpawnCall[] = [];
+  const kills: string[] = [];
+  const spawnImpl: LightpandaSpawn = (binary, args) => {
+    const call = { binary, args };
+    calls.push(call);
+    const spec = handler(call);
+    const listeners = new Map<string, ((value: unknown) => void)[]>();
+    const emit = (event: string, value: unknown) => {
+      for (const listener of listeners.get(event) ?? []) listener(value);
+    };
+    const child = {
+      stdout: spec.neverClose
+        ? null
+        : (async function* () {
+            if (spec.stdout !== undefined) yield Buffer.from(spec.stdout, "utf-8");
+          })(),
+      stderr: spec.neverClose
+        ? null
+        : (async function* () {
+            if (spec.stderr !== undefined) yield Buffer.from(spec.stderr, "utf-8");
+          })(),
+      on(event: string, listener: (value: unknown) => void) {
+        const list = listeners.get(event) ?? [];
+        list.push(listener);
+        listeners.set(event, list);
+        return child;
+      },
+      kill() {
+        kills.push(binary);
+        if (spec.neverClose) queueMicrotask(() => emit("close", null));
+        return true;
+      },
+    };
+    if (spec.errorCode) {
+      queueMicrotask(() =>
+        emit("error", Object.assign(new Error(`spawn ${spec.errorCode}`), { code: spec.errorCode })),
+      );
+    } else if (!spec.neverClose) {
+      queueMicrotask(() => emit("close", spec.code ?? 0));
+    }
+    return child as unknown as ReturnType<LightpandaSpawn>;
+  };
+  return { spawnImpl, calls, kills };
+}
+
+export function lightpandaJson(options: {
+  content?: string;
+  status?: number;
+  url?: string;
+  headers?: Record<string, string>;
+  error?: string | null;
+} = {}): string {
+  const headers = Object.entries(options.headers ?? { "content-type": "text/html; charset=utf-8" }).map(
+    ([name, value]) => ({ name, value }),
+  );
+  return JSON.stringify({
+    url: options.url ?? "https://example.com/",
+    http_status: options.status ?? 200,
+    headers,
+    content: options.content ?? "",
+    error: options.error ?? null,
+  });
+}
+
+export function spawnRendering(
+  content: string,
+  options: { status?: number; headers?: Record<string, string>; url?: string } = {},
+) {
+  return makeSpawn((call) => {
+    if (call.args.at(-1) === "version") return { stdout: "1.0.4", code: 0 };
+    return { stdout: lightpandaJson({ content, ...options }), code: 0 };
+  });
+}
+
+export function spawnFailing(code: number, stderr = "") {
+  return makeSpawn((call) => {
+    if (call.args.at(-1) === "version") return { stdout: "1.0.4", code: 0 };
+    return { stdout: "", stderr, code };
+  });
+}

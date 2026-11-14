@@ -1,12 +1,7 @@
-import { appendFile, chmod, mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
 import { collapseWhitespace, decodeHtmlEntities, feedHtml } from "./html-to-md.ts";
 import type { AttrDict } from "./html-to-md.ts";
-import { randomUserAgent } from "./user-agents.ts";
-import { agentDir } from "./agent-dir.ts";
-import { impersonatedRequest, type FetchTransport, type TlsHopOptions, type TlsHopResponse } from "./tls-fetch.ts";
-import { checkUrlAccess, isPublicIp, MAX_SIGNAL_TIMEOUT_MS, type WebsitePolicy } from "./web-access.ts";
-import { socksProxyForUrl } from "./proxy.ts";
+import type { WebsitePolicy } from "./web-access.ts";
+
 export class EmptySweepError extends Error {
   constructor() {
     super("No results found");
@@ -26,7 +21,6 @@ export class SearchCancelled extends Error {
     super("cancelled");
   }
 }
-
 
 export interface SearchResult {
   title: string;
@@ -156,6 +150,7 @@ interface XStep {
   preds: Pred[];
   terminal?: "text" | string;
 }
+
 function parsePredicateBlocks(input: string, start: number): { preds: Pred[]; next: number } {
   const preds: Pred[] = [];
   let pos = start;
@@ -479,21 +474,23 @@ export function extractResults(
   return results;
 }
 
-export type EngineImpersonation = (options: TlsHopOptions) => Promise<TlsHopResponse | null>;
 export type SearchRenderPage = (
   url: string,
-  options: { timeoutMs: number; signal?: AbortSignal; websitePolicy?: WebsitePolicy | null },
+  options: {
+    timeoutMs: number;
+    signal?: AbortSignal;
+    websitePolicy?: WebsitePolicy | null;
+    allowPrivateAddresses?: boolean;
+  },
 ) => Promise<string | null>;
 
 export interface SearchEngineOptions {
-  transport?: FetchTransport;
   policy?: WebsitePolicy | null;
-  impersonate?: EngineImpersonation;
   engines?: string[];
   engineWeights?: Record<string, number>;
   maxPerHost?: number;
-  renderFallback?: boolean;
   renderPage?: SearchRenderPage;
+  allowPrivateAddresses?: boolean;
 }
 
 export interface EngineContext extends SearchEngineOptions {
@@ -504,240 +501,12 @@ export interface EngineContext extends SearchEngineOptions {
 export interface Engine {
   name: string;
   provider: string;
-  renderOnly?: boolean;
-  search(
+  render(
     query: string,
     ctx: EngineContext,
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<SearchResult[] | null>;
-  render?(
-    query: string,
-    ctx: EngineContext,
-    timeoutMs: number,
-    signal?: AbortSignal,
-  ): Promise<SearchResult[] | null>;
-}
-
-interface HttpRequestOptions {
-  headers?: Record<string, string>;
-  cookies?: Record<string, string>;
-  timeoutMs: number;
-  signal?: AbortSignal;
-  ctx?: EngineContext;
-}
-
-interface HttpOptions extends HttpRequestOptions {
-  method?: string;
-  body?: string;
-}
-
-async function httpGet(
-  url: string,
-  params: Record<string, string>,
-  options: HttpRequestOptions,
-): Promise<string | null> {
-  const target = new URL(url);
-  for (const [key, value] of Object.entries(params)) target.searchParams.set(key, value);
-  return httpFetch(target.toString(), options);
-}
-
-async function httpPost(
-  url: string,
-  data: Record<string, string>,
-  options: HttpRequestOptions,
-): Promise<string | null> {
-  return httpFetch(url, { ...options, method: "POST", body: new URLSearchParams(data).toString() });
-}
-
-const MAX_ENGINE_RESPONSE_BYTES = 5 * 1024 * 1024;
-const ENGINE_RETRY_BACKOFF_MS = 250;
-const MAX_ENGINE_HOPS = 5;
-const DEFAULT_ENGINE_TRANSPORT: FetchTransport = "off";
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function readBodyCapped(response: Response): Promise<string | null> {
-  const declared = Number(response.headers.get("content-length") ?? "0");
-  if (declared > MAX_ENGINE_RESPONSE_BYTES) return null;
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > MAX_ENGINE_RESPONSE_BYTES) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  return new TextDecoder("utf-8").decode(Buffer.concat(chunks));
-}
-
-interface EngineHopResponse {
-  status: number;
-  location: string | null;
-  body: string | null;
-}
-
-type EngineTransportKind = "direct" | "tls";
-
-function engineTransportOrder(transport: FetchTransport, target: URL): EngineTransportKind[] {
-  if (transport === "off" || socksProxyForUrl(target) !== null) return ["direct"];
-  return transport === "direct-first" ? ["direct", "tls"] : ["tls", "direct"];
-}
-
-function engineTargetAllowed(target: string, policy: WebsitePolicy | null): boolean {
-  const [allowed, , hostname] = checkUrlAccess(target, policy);
-  if (!allowed) return false;
-  const isLiteral = hostname.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(hostname);
-  return !isLiteral || isPublicIp(hostname);
-}
-
-function classifyRequestError(
-  err: unknown,
-  caller: AbortSignal | undefined,
-  hopSignal: AbortSignal,
-): Error | null {
-  if (caller?.aborted) return new SearchCancelled();
-  if (hopSignal.aborted) return new SearchTimeoutError();
-  if (err instanceof DOMException && err.name === "TimeoutError") return new SearchTimeoutError();
-  if (err instanceof DOMException && err.name === "AbortError") return new SearchTimeoutError();
-  if (err instanceof Error && err.message === "timed out") return new SearchTimeoutError();
-  if (err instanceof Error && err.message === "cancelled") return new SearchCancelled();
-  return null;
-}
-
-async function directEngineHop(
-  target: URL,
-  headers: Record<string, string>,
-  method: string,
-  body: string | undefined,
-  signal: AbortSignal,
-): Promise<EngineHopResponse | null> {
-  const response = await fetch(target.toString(), { method, headers, body, signal, redirect: "manual" });
-  if (response.status === 200) {
-    const text = await readBodyCapped(response);
-    return text === null ? null : { status: 200, location: null, body: text };
-  }
-  try {
-    await response.body?.cancel();
-  } catch {}
-  return { status: response.status, location: response.headers.get("location"), body: null };
-}
-
-function tlsEngineHop(
-  impersonate: EngineImpersonation,
-  target: URL,
-  headers: Record<string, string>,
-  method: string,
-  body: string | undefined,
-  caller: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<EngineHopResponse | null> {
-  return impersonate({
-    url: target,
-    timeoutMs,
-    signal: caller,
-    maxBytes: MAX_ENGINE_RESPONSE_BYTES,
-    maxPdfBytes: MAX_ENGINE_RESPONSE_BYTES,
-    method,
-    body,
-    extraHeaders: headers,
-  }).then((response) => {
-    if (response === null || response.truncated) return null;
-    return {
-      status: response.status,
-      location: response.headers.location ?? null,
-      body: response.status === 200 ? new TextDecoder("utf-8").decode(response.body) : null,
-    };
-  });
-}
-
-async function httpFetch(
-  url: string,
-  options: HttpOptions,
-): Promise<string | null> {
-  const headers: Record<string, string> = {
-    "User-Agent": options.headers?.["User-Agent"] ?? randomUserAgent(),
-    Accept: "*/*",
-    ...options.headers,
-  };
-  if (options.method === "POST") headers["Content-Type"] = "application/x-www-form-urlencoded";
-  const cookie = options.cookies
-    ? Object.entries(options.cookies)
-        .map(([key, value]) => `${key}=${value}`)
-        .join("; ")
-    : null;
-  if (cookie) headers["Cookie"] = cookie;
-  const timeoutMs = Math.min(MAX_SIGNAL_TIMEOUT_MS, Math.max(1, options.timeoutMs));
-  const deadline = Date.now() + timeoutMs;
-  const caller = options.signal;
-  const transport = options.ctx?.transport ?? DEFAULT_ENGINE_TRANSPORT;
-  const policy = options.ctx?.policy ?? null;
-  const impersonate = options.ctx?.impersonate ?? (transport === "off" ? null : impersonatedRequest);
-  let method = options.method ?? "GET";
-  let body = method === "POST" ? options.body : undefined;
-  let target = url;
-  for (let hop = 0; hop < MAX_ENGINE_HOPS; hop++) {
-    if (caller?.aborted) throw new SearchCancelled();
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new SearchTimeoutError();
-    const targetUrl = new URL(target);
-    const hopSignal = caller
-      ? AbortSignal.any([caller, AbortSignal.timeout(remaining)])
-      : AbortSignal.timeout(remaining);
-    let response: EngineHopResponse | null = null;
-    let failure: unknown = null;
-    for (const kind of engineTransportOrder(transport, targetUrl)) {
-      try {
-        let attempt: EngineHopResponse | null = null;
-        if (kind === "tls") {
-          if (impersonate !== null) {
-            attempt = await tlsEngineHop(impersonate, targetUrl, headers, method, body, caller, remaining);
-          }
-        } else {
-          attempt = await directEngineHop(targetUrl, headers, method, body, hopSignal);
-        }
-        if (attempt === null) continue;
-        if (attempt.status === 200 || (attempt.status >= 300 && attempt.status < 400)) {
-          response = attempt;
-          break;
-        }
-        if (response === null || response.status >= 400) response = attempt;
-      } catch (err) {
-        const mapped = classifyRequestError(err, caller, hopSignal);
-        if (mapped) throw mapped;
-        failure = err;
-      }
-    }
-    if (response === null) {
-      if (failure) throw failure;
-      return null;
-    }
-    if (response.status >= 300 && response.status < 400) {
-      if (!response.location) return null;
-      let next: string;
-      try {
-        next = new URL(response.location, target).toString();
-      } catch {
-        return null;
-      }
-      if (!engineTargetAllowed(next, policy)) return null;
-      if (response.status !== 307 && response.status !== 308) {
-        method = "GET";
-        body = undefined;
-      }
-      target = next;
-      continue;
-    }
-    if (response.status !== 200) return null;
-    return response.body ?? "";
-  }
-  return null;
 }
 
 function searchUrl(url: string, params: Record<string, string>): string {
@@ -754,41 +523,38 @@ async function renderEnginePage(
   parse: (html: string) => SearchResult[],
 ): Promise<SearchResult[] | null> {
   if (!ctx.renderPage) return null;
-  const html = await ctx.renderPage(url, { timeoutMs, signal, websitePolicy: ctx.policy ?? null });
+  const html = await ctx.renderPage(url, {
+    timeoutMs,
+    signal,
+    websitePolicy: ctx.policy ?? null,
+    allowPrivateAddresses: ctx.allowPrivateAddresses,
+  });
   return html === null ? null : parse(html);
 }
 
-function parseDuckDuckGoResults(html: string): SearchResult[] {
-  const results = extractResults(html, "//div[contains(@class, 'body')]", {
-    title: ".//h2//text()",
-    href: "./a/@href",
-    body: "./a//text()",
-  });
-  return results.filter((r) => !r.href.startsWith("https://duckduckgo.com/y.js?"));
+function decodeBingHref(href: string): string {
+  try {
+    const parsed = new URL(href);
+    if (!/(^|\.)bing\.com$/.test(parsed.hostname)) return href;
+    const raw = parsed.searchParams.get("u");
+    if (!raw || !raw.startsWith("a1")) return href;
+    const base64 = raw.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    return /^https?:\/\//.test(decoded) ? decoded : href;
+  } catch {
+    return href;
+  }
 }
 
-function parseYandexResults(html: string): SearchResult[] {
-  return extractResults(html, "//li[contains(@class, 'serp-item')]", {
-    title: ".//h3//text()",
-    href: ".//h3//a/@href",
-    body: ".//div[contains(@class, 'text')]//text()",
-  });
-}
-
-function parseStartpageResults(html: string): SearchResult[] {
-  return extractResults(html, "//div[contains(@class, 'result')][./a]", {
+function parseBingResults(html: string): SearchResult[] {
+  return extractResults(html, "//li[contains(@class, 'b_algo')]", {
     title: ".//h2//text()",
-    href: "./a/@href",
+    href: ".//h2//a/@href",
     body: ".//p//text()",
-  });
-}
-
-function parseYahooResults(html: string): SearchResult[] {
-  return extractResults(html, "//li[.//h3[@class='title']]", {
-    title: ".//h3//text()",
-    href: ".//a[.//h3]/@href",
-    body: ".//div[contains(@class, 'compText')]//text()",
-  });
+  })
+    .map((result) => ({ ...result, href: decodeBingHref(result.href) }))
+    .filter((result) => result.title && /^https?:\/\//.test(result.href));
 }
 
 function parseBraveResults(html: string): SearchResult[] {
@@ -796,96 +562,35 @@ function parseBraveResults(html: string): SearchResult[] {
     title: ".//div[contains(@class, 'title')]//text()",
     href: ".//a[div[contains(@class, 'title')]]/@href",
     body: ".//div[contains(@class, 'generic-snippet')]//text()",
-  });
+  }).filter((result) => result.title && /^https?:\/\//.test(result.href));
 }
 
-const DUCKDUCKGO: Engine = {
-  name: "duckduckgo",
+function parseYahooResults(html: string): SearchResult[] {
+  return extractResults(html, "//li[.//h3[@class='title']]", {
+    title: ".//h3//text()",
+    href: ".//a[.//h3]/@href",
+    body: ".//div[contains(@class, 'compText')]//text()",
+  }).filter((result) => result.title && /^https?:\/\//.test(result.href));
+}
+
+function parseEcosiaResults(html: string): SearchResult[] {
+  return extractResults(html, "//article[@data-test-id='organic-result']", {
+    title: ".//h2[contains(@class, 'result-title__heading')]//text()",
+    href: ".//div[contains(@class, 'result__title')]//a/@href",
+    body: ".//p[contains(@class, 'web-result__description')]//text()",
+  }).filter((result) => result.title && /^https?:\/\//.test(result.href));
+}
+
+const BING: Engine = {
+  name: "bing",
   provider: "bing",
-  async search(query, ctx, timeoutMs, signal) {
-    const html = await httpPost(
-      "https://html.duckduckgo.com/html/",
-      { q: query, b: "", l: ctx.region },
-      { headers: { "User-Agent": randomUserAgent() }, timeoutMs, signal, ctx },
-    );
-    if (!html) return null;
-    return parseDuckDuckGoResults(html);
-  },
   render(query, ctx, timeoutMs, signal) {
     return renderEnginePage(
-      searchUrl("https://html.duckduckgo.com/html/", { q: query, l: ctx.region }),
+      searchUrl("https://www.bing.com/search", { q: query }),
       ctx,
       timeoutMs,
       signal,
-      parseDuckDuckGoResults,
-    );
-  },
-};
-
-const YANDEX: Engine = {
-  name: "yandex",
-  provider: "yandex",
-  async search(query, ctx, timeoutMs, signal) {
-    const searchid = 1000000 + Math.floor(Math.random() * 9000000);
-    const html = await httpGet(
-      "https://yandex.com/search/site/",
-      { text: query, web: "1", searchid: String(searchid) },
-      { timeoutMs, signal, ctx },
-    );
-    if (!html) return null;
-    return parseYandexResults(html);
-  },
-  render(query, ctx, timeoutMs, signal) {
-    const searchid = 1000000 + Math.floor(Math.random() * 9000000);
-    return renderEnginePage(
-      searchUrl("https://yandex.com/search/site/", { text: query, web: "1", searchid: String(searchid) }),
-      ctx,
-      timeoutMs,
-      signal,
-      parseYandexResults,
-    );
-  },
-};
-
-const START_PAGE: Engine = {
-  name: "startpage",
-  provider: "google",
-  async search(query, ctx, timeoutMs, signal) {
-    const [country, lang] = ctx.region.toLowerCase().split("-");
-    const html = await httpGet(
-      "https://www.startpage.com/sp/search",
-      { query, qsr: `${lang}_${country.toUpperCase()}` },
-      { headers: { Referer: "https://www.startpage.com/" }, timeoutMs, signal, ctx },
-    );
-    if (!html) return null;
-    return parseStartpageResults(html);
-  },
-  render(query, ctx, timeoutMs, signal) {
-    const [country, lang] = ctx.region.toLowerCase().split("-");
-    return renderEnginePage(
-      searchUrl("https://www.startpage.com/sp/search", { query, qsr: `${lang}_${country.toUpperCase()}` }),
-      ctx,
-      timeoutMs,
-      signal,
-      parseStartpageResults,
-    );
-  },
-};
-
-const YAHOO: Engine = {
-  name: "yahoo",
-  provider: "yahoo",
-  renderOnly: true,
-  async search() {
-    return null;
-  },
-  render(query, ctx, timeoutMs, signal) {
-    return renderEnginePage(
-      searchUrl("https://search.yahoo.com/search", { p: query }),
-      ctx,
-      timeoutMs,
-      signal,
-      parseYahooResults,
+      parseBingResults,
     );
   },
 };
@@ -893,10 +598,6 @@ const YAHOO: Engine = {
 const BRAVE: Engine = {
   name: "brave",
   provider: "brave",
-  renderOnly: true,
-  async search() {
-    return null;
-  },
   render(query, ctx, timeoutMs, signal) {
     return renderEnginePage(
       searchUrl("https://search.brave.com/search", { q: query }),
@@ -908,9 +609,37 @@ const BRAVE: Engine = {
   },
 };
 
-export const TEXT_ENGINES: Engine[] = [DUCKDUCKGO, YANDEX, START_PAGE, YAHOO, BRAVE];
+const YAHOO: Engine = {
+  name: "yahoo",
+  provider: "yahoo",
+  render(query, ctx, timeoutMs, signal) {
+    return renderEnginePage(
+      searchUrl("https://search.yahoo.com/search", { p: query }),
+      ctx,
+      timeoutMs,
+      signal,
+      parseYahooResults,
+    );
+  },
+};
 
-export const DEFAULT_ENGINE_NAMES = ["duckduckgo", "startpage"] as const;
+const ECOSIA: Engine = {
+  name: "ecosia",
+  provider: "ecosia",
+  render(query, ctx, timeoutMs, signal) {
+    return renderEnginePage(
+      searchUrl("https://www.ecosia.org/search", { q: query }),
+      ctx,
+      timeoutMs,
+      signal,
+      parseEcosiaResults,
+    );
+  },
+};
+
+export const TEXT_ENGINES: Engine[] = [BING, BRAVE, YAHOO, ECOSIA];
+
+export const DEFAULT_ENGINE_NAMES = ["brave", "ecosia"] as const;
 
 export class ResultsAggregator {
   private cache = new Map<string, SearchResult>();
@@ -988,55 +717,18 @@ function isWikimediaCategory(doc: SearchResult): boolean {
   return doc.title.includes("Category:") && doc.title.includes("Wikimedia");
 }
 
-async function recordSweepStats(query: string, maxResults: number, started: number, timedOutProviders: string[], resultCount: number): Promise<void> {
-  const flag = process.env.PI_UNSLOTH_WEBTOOLS_STATS?.trim();
-  if (!flag) return;
-  const lower = flag.toLowerCase();
-  if (lower === "0" || lower === "false" || lower === "no" || lower === "off") return;
-  const base = agentDir();
-  if (!base) return;
-  const isDefaultFlag = lower === "1" || lower === "true" || lower === "yes" || lower === "on";
-  const statsPath = isDefaultFlag ? join(base, "pi-unsloth-webtools-stats.jsonl") : isAbsolute(flag) ? flag : join(base, flag);
-  try {
-    const dir = dirname(statsPath);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (process.platform !== "win32") {
-      try {
-        await chmod(dir, 0o700);
-      } catch {}
-    }
-    const sortedProviders = [...timedOutProviders].sort();
-    const entry = JSON.stringify({
-      ts: new Date().toISOString(),
-      query,
-      maxResults,
-      durationMs: Date.now() - started,
-      timedOutProviders: sortedProviders,
-      resultCount,
-    });
-    await appendFile(statsPath, entry + "\n", { mode: 0o600 });
-    if (process.platform !== "win32") {
-      try {
-        await chmod(statsPath, 0o600);
-      } catch {}
-    }
-  } catch {}
-}
-
 function defaultEngines(): Engine[] {
   const wanted = new Set<string>(DEFAULT_ENGINE_NAMES);
   return TEXT_ENGINES.filter((engine) => wanted.has(engine.name));
 }
 
-function selectedEngines(names: string[] | undefined, renderEnabled: boolean): Engine[] {
+function selectedEngines(names: string[] | undefined): Engine[] {
   const wanted = new Set((names?.length ? names : DEFAULT_ENGINE_NAMES).map((name) => name.trim().toLowerCase()));
-  const chosen = TEXT_ENGINES.filter((engine) => wanted.has(engine.name)).filter(
-    (engine) => renderEnabled || engine.renderOnly !== true,
-  );
+  const chosen = TEXT_ENGINES.filter((engine) => wanted.has(engine.name));
   return chosen.length ? chosen : defaultEngines();
 }
 
-function shuffledEngines(engines: Engine[] = TEXT_ENGINES): Engine[] {
+function shuffledEngines(engines: Engine[]): Engine[] {
   const shuffled = [...engines];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1053,10 +745,8 @@ export async function autoTextSearch(
   options: SearchEngineOptions = {},
 ): Promise<SearchResult[]> {
   const started = Date.now();
-  const renderEnabled = options.renderFallback === true && options.renderPage !== undefined;
-  const engines = shuffledEngines(selectedEngines(options.engines, renderEnabled));
+  const engines = shuffledEngines(selectedEngines(options.engines));
   const deadline = started + timeoutMs;
-  const seenProviders = new Set<string>();
   const aggregator = new ResultsAggregator();
   const engineWeights = options.engineWeights ?? {};
   const maxPerHost = options.maxPerHost ?? DEFAULT_MAX_PER_HOST;
@@ -1064,11 +754,9 @@ export async function autoTextSearch(
   const ctx: EngineContext = {
     region: "us-en",
     safesearch: "moderate",
-    transport: options.transport ?? DEFAULT_ENGINE_TRANSPORT,
     policy: options.policy ?? null,
-    impersonate: options.impersonate,
-    renderFallback: options.renderFallback,
     renderPage: options.renderPage,
+    allowPrivateAddresses: options.allowPrivateAddresses,
   };
   const controller = new AbortController();
   let onAbort: (() => void) | undefined;
@@ -1081,26 +769,37 @@ export async function autoTextSearch(
   }
   const timedOutProviders = new Set<string>();
   let cancelled = false;
-  const uniqueProviders = new Set(engines.map((e) => e.provider)).size;
-  const maxWorkers = Math.min(uniqueProviders, Math.max(4, Math.ceil(maxResults / 5) + 1));
+  let deadlineReached = false;
+  const deadlineTimer = setTimeout(() => {
+    deadlineReached = true;
+    controller.abort();
+  }, Math.max(1, timeoutMs));
+  const maxWorkers = Math.min(engines.length, 3);
   let i = 0;
   const pending = new Set<Promise<void>>();
   const run = async (engine: Engine) => {
+    if (controller.signal.aborted) {
+      if (signal?.aborted) cancelled = true;
+      else if (deadlineReached) timedOutProviders.add(engine.name);
+      return;
+    }
     let results: SearchResult[] | null = null;
-    for (let attempt = 0; !engine.renderOnly && attempt < 2 && results === null; attempt++) {
+    for (let attempt = 0; attempt < 2 && results === null; attempt++) {
       if (controller.signal.aborted) {
         if (signal?.aborted) cancelled = true;
+        else if (deadlineReached) timedOutProviders.add(engine.name);
         return;
       }
-      const budgetLeft = deadline - Date.now();
-      if (budgetLeft <= 0) return;
-      if (attempt > 0 && budgetLeft < ENGINE_RETRY_BACKOFF_MS) return;
-      const remaining = Math.max(1, budgetLeft);
+      const attemptBudget = deadline - Date.now();
+      if (attemptBudget <= 0) {
+        timedOutProviders.add(engine.name);
+        return;
+      }
       const engineSignal = signal
         ? AbortSignal.any([signal, controller.signal])
         : controller.signal;
       try {
-        results = await engine.search(query, ctx, remaining, engineSignal);
+        results = await engine.render(query, ctx, Math.max(1, attemptBudget), engineSignal);
       } catch (e) {
         if (e instanceof SearchCancelled) {
           if (controller.signal.aborted && !signal?.aborted) return;
@@ -1109,41 +808,24 @@ export async function autoTextSearch(
         }
         if (e instanceof SearchTimeoutError) {
           timedOutProviders.add(engine.name);
+          return;
+        }
+        if (controller.signal.aborted) {
+          if (signal?.aborted) cancelled = true;
+          else if (deadlineReached) timedOutProviders.add(engine.name);
           return;
         }
       }
       if (results === null && attempt === 0) {
-        const backoff = Math.min(ENGINE_RETRY_BACKOFF_MS, Math.max(0, deadline - Date.now()));
-        if (backoff > 0) await sleep(backoff);
-        if (signal?.aborted) {
-          cancelled = true;
-          return;
-        }
-        if (controller.signal.aborted) return;
-      }
-    }
-
-    if (!results?.length && engine.render && ctx.renderFallback && !controller.signal.aborted) {
-      const budgetLeft = deadline - Date.now();
-      if (budgetLeft <= 0) return;
-      const engineSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-      try {
-        results = await engine.render(query, ctx, Math.max(1, budgetLeft), engineSignal);
-      } catch (e) {
-        if (e instanceof SearchCancelled) {
-          if (controller.signal.aborted && !signal?.aborted) return;
-          cancelled = true;
-          return;
-        }
-        if (e instanceof SearchTimeoutError) {
-          timedOutProviders.add(engine.name);
-          return;
+        const backoff = Math.min(250, Math.max(0, deadline - Date.now()));
+        if (backoff > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, backoff));
         }
       }
     }
+    if (results === null && Date.now() >= deadline) timedOutProviders.add(engine.name);
     if (results && results.length) {
       aggregator.extend(results, engineWeights[engine.name] ?? 1);
-      seenProviders.add(engine.provider);
       if (enough()) controller.abort();
     }
   };
@@ -1158,7 +840,6 @@ export async function autoTextSearch(
         break;
       }
       const engine = engines[i++];
-      if (seenProviders.has(engine.provider)) continue;
       const task = run(engine);
       pending.add(task);
       void task.then(
@@ -1171,25 +852,14 @@ export async function autoTextSearch(
       );
     }
     if (pending.size === 0) break;
-    if (enough() || cancelled) {
-      controller.abort();
-      break;
-    }
     await Promise.race(pending);
   }
   await Promise.allSettled(pending);
+  clearTimeout(deadlineTimer);
   if (onAbort && signal) signal.removeEventListener("abort", onAbort);
   if (cancelled) throw new SearchCancelled();
   const results = capByHost(aggregator.ranked(), maxResults, maxPerHost);
-  if (results.length) {
-    void recordSweepStats(query, maxResults, started, [...timedOutProviders], results.length);
-    return results;
-  }
-  if (timedOutProviders.size) {
-    const sorted = [...timedOutProviders].sort();
-    void recordSweepStats(query, maxResults, started, sorted, 0);
-    throw new SearchTimeoutError(sorted);
-  }
-  void recordSweepStats(query, maxResults, started, [], 0);
+  if (results.length) return results;
+  if (timedOutProviders.size) throw new SearchTimeoutError([...timedOutProviders].sort());
   throw new EmptySweepError();
 }

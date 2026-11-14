@@ -1163,3 +1163,123 @@ export function htmlToMarkdown(sourceHtml: string, mainContent = false): string 
   }
   return render(sourceHtml, null);
 }
+
+const NON_DOCUMENT_TITLE_TAGS = new Set(["math", "noscript", "svg", "template"]);
+const META_VALUE_MAX_CHARS = 300;
+
+export interface PageMeta {
+  title: string;
+  author: string;
+  date: string;
+  site: string;
+  description: string;
+}
+
+const META_KEYS: Record<string, keyof PageMeta> = Object.assign(Object.create(null), {
+  author: "author",
+  "article:author": "author",
+  "dc.creator": "author",
+  "article:published_time": "date",
+  date: "date",
+  "dc.date": "date",
+  datepublished: "date",
+  "og:site_name": "site",
+  "application-name": "site",
+  description: "description",
+  "og:description": "description",
+});
+
+function cutAtCharBoundary(text: string, maxChars: number): string {
+  const sliced = text.slice(0, maxChars);
+  if (!sliced) return sliced;
+  const last = sliced.charCodeAt(sliced.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) return sliced.slice(0, -1);
+  if (last >= 0xdc00 && last <= 0xdfff) {
+    const prev = sliced.length >= 2 ? sliced.charCodeAt(sliced.length - 2) : 0;
+    if (prev < 0xd800 || prev > 0xdbff) return sliced.slice(0, -1);
+  }
+  return sliced;
+}
+
+function extractPageTitle(html: string): string {
+  let inTitle = false;
+  let done = false;
+  let skipDepth = 0;
+  const parts: string[] = [];
+  feedHtml(html, {
+    handleStartTag(name: string) {
+      if (NON_DOCUMENT_TITLE_TAGS.has(name)) {
+        skipDepth++;
+        return;
+      }
+      if (skipDepth) return;
+      if (name === "title" && !done) inTitle = true;
+      else if (inTitle) inTitle = false;
+    },
+    handleStartEndTag() {},
+    handleEndTag(name: string) {
+      if (NON_DOCUMENT_TITLE_TAGS.has(name)) {
+        skipDepth = Math.max(0, skipDepth - 1);
+        return;
+      }
+      if (skipDepth) return;
+      if (name === "title") {
+        inTitle = false;
+        done = true;
+      }
+    },
+    handleData(text: string) {
+      if (inTitle) parts.push(text);
+    },
+    handleEntityRef(name: string) {
+      if (inTitle) parts.push(decodeHtmlEntities(`&${name};`));
+    },
+    handleCharRef(name: string) {
+      if (inTitle) parts.push(decodeHtmlEntities(`&#${name};`));
+    },
+  });
+  return collapseWhitespace(parts.join(""));
+}
+
+function capMetaValue(value: string): string {
+  if (value.length <= META_VALUE_MAX_CHARS) return value;
+  return cutAtCharBoundary(value, META_VALUE_MAX_CHARS);
+}
+
+export function extractPageMeta(html: string): PageMeta {
+  const meta: PageMeta = { title: extractPageTitle(html), author: "", date: "", site: "", description: "" };
+  const seen = new Set<string>();
+  const record = (name: string, attrs: AttrDict) => {
+    if (name !== "meta") return;
+    const key = (attrs["property"] ?? attrs["name"] ?? "").toLowerCase();
+    const content = collapseWhitespace(attrs["content"] ?? "");
+    if (!key || !content || seen.has(key)) return;
+    seen.add(key);
+    const field = META_KEYS[key];
+    if (field && !meta[field]) meta[field] = capMetaValue(content);
+  };
+  feedHtml(html, {
+    handleStartTag(name: string, attrs: AttrDict) {
+      record(name, attrs);
+    },
+    handleStartEndTag(name: string, attrs: AttrDict) {
+      record(name, attrs);
+    },
+    handleEndTag() {},
+    handleData() {},
+    handleEntityRef() {},
+    handleCharRef() {},
+  });
+  return meta;
+}
+
+export function pagePrefixedMarkdown(html: string): string {
+  const meta = extractPageMeta(html);
+  const lines: string[] = [];
+  if (meta.title) lines.push(`Title: ${meta.title}`);
+  if (meta.author) lines.push(`Author: ${meta.author}`);
+  if (meta.date) lines.push(`Date: ${meta.date}`);
+  if (meta.site) lines.push(`Site: ${meta.site}`);
+  const markdown = htmlToMarkdown(html, true);
+  return lines.length ? `${lines.join("\n")}\n\n${markdown}` : markdown;
+}

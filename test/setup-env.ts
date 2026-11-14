@@ -12,6 +12,7 @@ const ISOLATED_ENV_NAMES = [
   "no_proxy",
   "PI_AGENT_DIR",
   "PI_UNSLOTH_CACHE_DIR",
+  "PI_LIGHTPANDA_CACHE_DIR",
   "PI_UNSLOTH_WEBTOOLS_STATS",
   "PI_LIGHTPANDA_BIN",
   "XDG_DATA_HOME",
@@ -19,5 +20,5 @@ const ISOLATED_ENV_NAMES = [
 
 for (const name of ISOLATED_ENV_NAMES) delete process.env[name];
 
-process.env.PI_CODING_AGENT_DIR = join(tmpdir(), "pi-unsloth-webtools-test-agent");
-process.env.XDG_DATA_HOME = join(tmpdir(), "pi-unsloth-webtools-test-data");
+process.env.PI_CODING_AGENT_DIR = join(tmpdir(), "pi-lightpanda-web-test-agent");
+process.env.XDG_DATA_HOME = join(tmpdir(), "pi-lightpanda-web-test-data");

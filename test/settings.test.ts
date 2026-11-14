@@ -1,0 +1,145 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  loadDefaultEngineWeights,
+  loadDefaultEngines,
+  loadDefaultFetchSettings,
+  loadDefaultMaxPerHost,
+  loadDefaultMaxResults,
+  loadLightpandaSettings,
+} from "../settings.ts";
+
+let root: string;
+const initialAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "pi-lightpanda-settings-"));
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+});
+
+afterEach(async () => {
+  if (initialAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = initialAgentDir;
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("fetch settings", () => {
+  it("defaults both local-access flags to true and leaves limits unset", async () => {
+    expect(await loadDefaultFetchSettings()).toEqual({
+      maxChars: undefined,
+      timeoutMs: undefined,
+      allowPrivateAddresses: true,
+      allowLocalFiles: true,
+    });
+  });
+
+  it("reads global and project settings with project override", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(
+      join(agent, "settings.json"),
+      JSON.stringify({
+        webFetch: { maxChars: 1000, timeoutMs: 5000, allowPrivateAddresses: false, allowLocalFiles: false },
+        piLightpanda: { maxChars: 2000 },
+      }),
+    );
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ webFetch: { allowPrivateAddresses: true, timeoutMs: 9000 } }),
+    );
+    expect(await loadDefaultFetchSettings(cwd)).toEqual({
+      maxChars: 2000,
+      timeoutMs: 9000,
+      allowPrivateAddresses: true,
+      allowLocalFiles: false,
+    });
+  });
+
+  it("ignores invalid limits", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(
+      join(agent, "settings.json"),
+      JSON.stringify({ webFetch: { maxChars: 0, timeoutMs: 10 } }),
+    );
+    const settings = await loadDefaultFetchSettings();
+    expect(settings.maxChars).toBeUndefined();
+    expect(settings.timeoutMs).toBeUndefined();
+  });
+});
+
+describe("search settings", () => {
+  it("defaults to unset engines and reads a project override", async () => {
+    expect(await loadDefaultMaxResults()).toBe(5);
+    expect(await loadDefaultEngines()).toBeUndefined();
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        webSearch: {
+          engines: ["bing", "yahoo"],
+          maxResults: 9,
+          engineWeights: { bing: 2, yahoo: 0.5, bad: -1 },
+          maxPerHost: 3,
+        },
+      }),
+    );
+    expect(await loadDefaultMaxResults(cwd)).toBe(9);
+    expect(await loadDefaultEngines(cwd)).toEqual(["bing", "yahoo"]);
+    expect(await loadDefaultEngineWeights(cwd)).toEqual({ bing: 2, yahoo: 0.5 });
+    expect(await loadDefaultMaxPerHost(cwd)).toBe(3);
+  });
+
+  it("clamps maxResults to 1..20", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webSearch: { maxResults: 99 } }));
+    expect(await loadDefaultMaxResults()).toBe(20);
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webSearch: { maxResults: 0 } }));
+    expect(await loadDefaultMaxResults()).toBe(1);
+  });
+});
+
+describe("lightpanda settings", () => {
+  it("defaults the renderer on with no configured path", async () => {
+    expect(await loadLightpandaSettings()).toEqual({ enabled: true, binaryPath: null, command: null });
+  });
+
+  it("reads path, command and toggle with project override", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(
+      join(agent, "settings.json"),
+      JSON.stringify({
+        webRender: {
+          lightpandaPath: "/opt/lightpanda",
+          lightpandaCommand: ["wsl.exe", "-e", "/home/u/lp", 42, "", "  "],
+          lightpandaEnabled: true,
+        },
+      }),
+    );
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify({ webRender: { lightpandaEnabled: false } }));
+    expect(await loadLightpandaSettings(cwd)).toEqual({
+      enabled: false,
+      binaryPath: "/opt/lightpanda",
+      command: ["wsl.exe", "-e", "/home/u/lp"],
+    });
+  });
+
+  it("leaves a non-list command unset", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(
+      join(agent, "settings.json"),
+      JSON.stringify({ webRender: { lightpandaCommand: "wsl.exe -e /home/u/lp" } }),
+    );
+    expect((await loadLightpandaSettings()).command).toBeNull();
+  });
+});

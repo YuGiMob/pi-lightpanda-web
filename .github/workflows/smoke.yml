@@ -1,4 +1,4 @@
-name: Smoke tests
+name: Live tests
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  smoke:
+  live:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,4 +15,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run test:smoke
+      - name: Install Lightpanda
+        run: |
+          echo "PI_LIGHTPANDA_E2E=1" >> "$GITHUB_ENV"
+          echo "PI_LIGHTPANDA_E2E_BIN=$(bash scripts/install-lightpanda.sh --print-path --no-configure)" >> "$GITHUB_ENV"
+      - run: npm run test:live

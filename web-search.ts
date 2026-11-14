@@ -1,5 +1,4 @@
 import { checkUrlAccess, scopeSearchQuery, type WebsitePolicy } from "./web-access.ts";
-import { loadDefaultMaxResults, loadLightpandaSettings } from "./settings.ts";
 import { collapseWhitespace } from "./html-to-md.ts";
 import {
   autoTextSearch,
@@ -10,13 +9,14 @@ import {
   type SearchRenderPage,
   type SearchResult,
 } from "./engines.ts";
-import { renderPageHtml } from "./lightpanda.ts";
-import type { FetchTransport } from "./tls-fetch.ts";
+import { renderPageHtml, type LightpandaSettings } from "./lightpanda.ts";
+import { loadDefaultMaxResults, loadLightpandaSettings } from "./settings.ts";
 
 export { EmptySweepError, SearchCancelled, SearchTimeoutError } from "./engines.ts";
 
 export const SEARCH_TIMEOUT_MS = 300_000;
 const MAX_RESULTS = 5;
+const POLICY_OVERFETCH = 4;
 
 export const EMPTY_SEARCH_RESULTS = [
   "No results found.",
@@ -30,32 +30,33 @@ export type SearchClient = (
   timeoutMs?: number,
   options?: SearchEngineOptions,
 ) => Promise<SearchResult[]>;
-export async function ddgSearch(
-  query: string,
-  maxResults = MAX_RESULTS,
-  signal?: AbortSignal,
-  timeoutMs = SEARCH_TIMEOUT_MS,
-  options: SearchEngineOptions = {},
-): Promise<SearchResult[]> {
-  if (signal?.aborted) throw new SearchCancelled();
-  return autoTextSearch(query, maxResults, timeoutMs, signal, {
-    ...options,
-    transport: options.transport ?? "tls-first",
-  });
-}
 
-const POLICY_OVERFETCH = 4;
-
-async function configuredRenderPage(cwd?: string): Promise<SearchRenderPage | undefined> {
-  const settings = await loadLightpandaSettings(cwd).catch(() => null);
-  if (!settings?.enabled) return undefined;
+async function configuredRenderPage(
+  cwd?: string,
+  settings?: LightpandaSettings | null,
+): Promise<SearchRenderPage | undefined> {
+  const resolved = settings ?? (await loadLightpandaSettings(cwd).catch(() => null));
+  if (!resolved?.enabled) return undefined;
   return (url, options) =>
     renderPageHtml(url, {
       timeoutMs: options.timeoutMs,
       signal: options.signal,
       websitePolicy: options.websitePolicy,
-      settings,
+      allowPrivateAddresses: options.allowPrivateAddresses,
+      settings: resolved,
     });
+}
+
+export async function searchSweep(
+  query: string,
+  maxResults = MAX_RESULTS,
+  signal?: AbortSignal,
+  timeoutMs = SEARCH_TIMEOUT_MS,
+  options: SearchEngineOptions & { cwd?: string } = {},
+): Promise<SearchResult[]> {
+  if (signal?.aborted) throw new SearchCancelled();
+  const renderPage = options.renderPage ?? (await configuredRenderPage(options.cwd));
+  return autoTextSearch(query, maxResults, timeoutMs, signal, { ...options, renderPage });
 }
 
 export interface WebSearchOptions {
@@ -65,12 +66,12 @@ export interface WebSearchOptions {
   websitePolicy?: WebsitePolicy | null;
   client?: SearchClient;
   cwd?: string;
-  transport?: FetchTransport;
   engines?: string[];
   engineWeights?: Record<string, number>;
   maxPerHost?: number;
-  lightpandaFallback?: boolean;
   renderPage?: SearchRenderPage;
+  allowPrivateAddresses?: boolean;
+  settings?: LightpandaSettings | null;
 }
 
 export { loadDefaultMaxResults };
@@ -87,7 +88,7 @@ export async function webSearch(
   const timeoutMs = flooredTimeout >= 1 ? flooredTimeout : SEARCH_TIMEOUT_MS;
   const signal = options.signal;
   const policy = options.websitePolicy ?? null;
-  const client = options.client ?? ddgSearch;
+  const client = options.client ?? searchSweep;
 
   if (!query || !query.trim()) return "No query provided.";
   if (signal?.aborted) return "Search cancelled.";
@@ -98,18 +99,15 @@ export async function webSearch(
         (policy?.blockedDomains?.length ?? 0) > 0,
     );
     const wanted = restricted ? maxResults * POLICY_OVERFETCH : maxResults;
-    const renderFallback = options.lightpandaFallback === true;
-    const renderPage = renderFallback
-      ? options.renderPage ?? (await configuredRenderPage(options.cwd))
-      : undefined;
+    const renderPage =
+      options.renderPage ?? (await configuredRenderPage(options.cwd, options.settings));
     const results = await client(effectiveQuery, wanted, signal, timeoutMs, {
-      transport: options.transport,
       policy,
       engines: options.engines,
       engineWeights: options.engineWeights,
       maxPerHost: options.maxPerHost,
-      renderFallback,
       renderPage,
+      allowPrivateAddresses: options.allowPrivateAddresses,
     });
     if (signal?.aborted) return "Search cancelled.";
     if (!results.length) return EMPTY_SEARCH_RESULTS[0];

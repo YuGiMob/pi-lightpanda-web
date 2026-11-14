@@ -11,11 +11,11 @@ const MAX_BYTES = 128 * 1024 * 1024;
 const STALE_MAX_AGE_MS = 24 * CACHE_TTL_MS;
 
 function cacheDir(): string {
-  const env = process.env.PI_UNSLOTH_CACHE_DIR?.trim();
+  const env = (process.env.PI_LIGHTPANDA_CACHE_DIR ?? process.env.PI_UNSLOTH_CACHE_DIR)?.trim();
   if (env) return env;
   const base = agentDir();
-  if (base) return join(base, "pi-unsloth-cache");
-  return join(tmpdir(), "pi-unsloth-cache");
+  if (base) return join(base, "pi-lightpanda-cache");
+  return join(tmpdir(), "pi-lightpanda-cache");
 }
 
 function cacheKey(url: string): string {
@@ -158,5 +158,5 @@ export function isFresh(entry: CacheEntry, now = Date.now()): boolean {
 
 export function staleNotice(entry: CacheEntry): string {
   const date = new Date(entry.timestamp).toISOString().slice(0, 10);
-  return `\n\n*STALE cache from ${date} — network fetch failed, serving cached copy*`;
+  return `\n\n*STALE cache from ${date} — fetch failed, serving cached copy*`;
 }

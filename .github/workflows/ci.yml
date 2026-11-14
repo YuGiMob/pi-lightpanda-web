@@ -41,7 +41,7 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
-  lightpanda:
+  live:
     runs-on: ubuntu-latest
 
     steps:
@@ -60,7 +60,7 @@ jobs:
       - name: Install Lightpanda
         run: |
           echo "PI_LIGHTPANDA_E2E=1" >> "$GITHUB_ENV"
-          echo "PI_LIGHTPANDA_E2E_BIN=$(bash scripts/install-lightpanda.sh --print-path)" >> "$GITHUB_ENV"
+          echo "PI_LIGHTPANDA_E2E_BIN=$(bash scripts/install-lightpanda.sh --print-path --no-configure)" >> "$GITHUB_ENV"
 
       - name: Render pages with the local renderer
-        run: npm run test:lightpanda
+        run: npm run test:live
