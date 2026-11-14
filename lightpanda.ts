@@ -324,7 +324,7 @@ export async function ensureLightpandaInstalled(options: EnsureLightpandaOptions
   if (options.binaryPath || options.settings?.binaryPath || process.env.PI_LIGHTPANDA_BIN?.trim()) {
     return binaryAvailable(lightpandaLaunch(options), spawn);
   }
-  if (process.platform === "win32" || (options.spawn && !options.installer)) {
+  if (!options.installer && (process.platform === "win32" || options.spawn)) {
     return binaryAvailable(lightpandaLaunch(options), spawn);
   }
   if (installPromise) return installPromise;
