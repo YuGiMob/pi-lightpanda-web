@@ -12,7 +12,7 @@ function firstText(update: { content: { type: string; text?: string }[] }): stri
   return update.content[0]?.text ?? "";
 }
 
-function callText(component: { render(width: number): string[] } | undefined): string {
+function callText(component: { render(width: number): readonly string[] } | undefined): string {
   return component?.render(80).join("\n") ?? "";
 }
 
