@@ -102,19 +102,33 @@ type DumpOutcome =
   | { ok: false; message: string }
   | null;
 
-const availability = new Map<string, Promise<boolean>>();
+interface ProbeEntry {
+  probe: Promise<boolean>;
+  verdict: boolean | null;
+  checkedAt: number;
+}
+
+const NEGATIVE_PROBE_TTL_MS = 10_000;
+const availability = new Map<string, ProbeEntry>();
 let installPromise: Promise<boolean> | null = null;
 
 function binaryAvailable(launch: string[], spawn: LightpandaSpawn): Promise<boolean> {
   const key = launch.join(" ");
   const cached = availability.get(key);
-  if (cached) return cached;
-  const probe = new Promise<boolean>((resolve) => {
+  if (cached) {
+    if (cached.verdict !== false || Date.now() - cached.checkedAt < NEGATIVE_PROBE_TTL_MS) {
+      return cached.probe;
+    }
+  }
+  const entry: ProbeEntry = { probe: Promise.resolve(false), verdict: null, checkedAt: 0 };
+  entry.probe = new Promise<boolean>((resolve) => {
     let settled = false;
     const finish = (value: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      entry.verdict = value;
+      entry.checkedAt = Date.now();
       resolve(value);
     };
     const timer = setTimeout(() => {
@@ -133,8 +147,8 @@ function binaryAvailable(launch: string[], spawn: LightpandaSpawn): Promise<bool
     child.on("error", () => finish(false));
     child.on("close", (code) => finish(code === 0));
   });
-  availability.set(key, probe);
-  return probe;
+  availability.set(key, entry);
+  return entry.probe;
 }
 
 function runLightpanda(
@@ -315,6 +329,28 @@ export interface EnsureLightpandaOptions extends LightpandaRenderOptions {
   installer?: () => Promise<boolean>;
 }
 
+function awaitInstall(signal?: AbortSignal): Promise<boolean> {
+  const pending = installPromise;
+  if (!pending) return Promise.resolve(false);
+  if (!signal) return pending;
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => finish(() => resolve(false));
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      action();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
 export async function ensureLightpandaInstalled(options: EnsureLightpandaOptions = {}): Promise<boolean> {
   if (options.settings && options.settings.enabled === false) return false;
   const spawn = options.spawn ?? (spawnProcess as unknown as LightpandaSpawn);
@@ -324,10 +360,10 @@ export async function ensureLightpandaInstalled(options: EnsureLightpandaOptions
   if (options.binaryPath || options.settings?.binaryPath || process.env.PI_LIGHTPANDA_BIN?.trim()) {
     return binaryAvailable(lightpandaLaunch(options), spawn);
   }
+  if (installPromise) return awaitInstall(options.signal);
   if (!options.installer && (process.platform === "win32" || options.spawn)) {
     return binaryAvailable(lightpandaLaunch(options), spawn);
   }
-  if (installPromise) return installPromise;
   installPromise = (async () => {
     if (await binaryAvailable(lightpandaLaunch(options), spawn)) return true;
     const install = options.installer ?? runInstaller;
@@ -337,7 +373,7 @@ export async function ensureLightpandaInstalled(options: EnsureLightpandaOptions
   })().finally(() => {
     installPromise = null;
   });
-  return installPromise;
+  return awaitInstall(options.signal);
 }
 
 function renderArgs(
@@ -378,7 +414,9 @@ async function fetchDump(
   const access = checkUrlAccess(normalized, policy);
   if (!access[0]) return { ok: false, message: access[1] };
   const spawn = options.spawn ?? (spawnProcess as unknown as LightpandaSpawn);
-  if (!(await ensureLightpandaInstalled({ ...options, spawn }))) return null;
+  if (!(await ensureLightpandaInstalled({ ...options, spawn }))) {
+    return options.signal?.aborted ? { ok: false, message: CANCELLED_MESSAGE } : null;
+  }
   const launch = lightpandaLaunch(options);
   const timeoutMs = Math.min(
     MAX_SIGNAL_TIMEOUT_MS,

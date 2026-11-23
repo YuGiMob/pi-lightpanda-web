@@ -819,8 +819,16 @@ async function runTextSearch(
         : controller.signal;
       try {
         const outcome = await engine.render(query, ctx, Math.max(1, attemptBudget), engineSignal);
-        if (isRenderFailure(outcome)) renderFailure = outcome.error;
-        else results = outcome;
+        if (isRenderFailure(outcome)) {
+          if (controller.signal.aborted) {
+            if (signal?.aborted) cancelled = true;
+            else if (deadlineReached) timedOutProviders.add(engine.name);
+            return;
+          }
+          renderFailure = outcome.error;
+        } else {
+          results = outcome;
+        }
       } catch (e) {
         if (e instanceof SearchCancelled) {
           if (controller.signal.aborted && !signal?.aborted) return;
@@ -882,7 +890,7 @@ async function runTextSearch(
   await Promise.allSettled(pending);
   clearTimeout(deadlineTimer);
   if (onAbort && signal) signal.removeEventListener("abort", onAbort);
-  if (cancelled) throw new SearchCancelled();
+  if (cancelled || signal?.aborted) throw new SearchCancelled();
   const results = capByHost(aggregator.ranked(), maxResults, maxPerHost);
   if (results.length) return results;
   if (timedOutProviders.size) throw new SearchTimeoutError([...timedOutProviders].sort());

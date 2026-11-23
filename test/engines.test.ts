@@ -462,6 +462,45 @@ describe("sweep", () => {
     ).rejects.toThrow(SearchTimeoutError);
   });
 
+  it("reports a timeout when an aborted render returns a cancellation error", async () => {
+    const error: unknown = await autoTextSearch("cat", 5, 80, undefined, {
+      engines: ["bing"],
+      renderPage: (_url, options) =>
+        new Promise<{ error: string }>((resolve) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => resolve({ error: "Failed to render URL: cancelled." }),
+            { once: true },
+          );
+        }),
+    }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(SearchTimeoutError);
+    expect(error).not.toBeInstanceOf(SearchRenderError);
+    expect((error as SearchTimeoutError).providers).toEqual(["bing"]);
+  });
+
+  it("reports cancellation when the caller aborts an in-flight render", async () => {
+    const controller = new AbortController();
+    let started = false;
+    const pending = autoTextSearch("cat", 5, 10_000, controller.signal, {
+      engines: ["bing"],
+      renderPage: (_url, options) =>
+        new Promise<{ error: string }>((resolve) => {
+          started = true;
+          options.signal?.addEventListener(
+            "abort",
+            () => resolve({ error: "Failed to render URL: cancelled." }),
+            { once: true },
+          );
+        }),
+    });
+    setTimeout(() => controller.abort(), 10);
+    const began = Date.now();
+    await expect(pending).rejects.toThrow(SearchCancelled);
+    expect(Date.now() - began).toBeLessThan(1_000);
+    expect(started).toBe(true);
+  });
+
   it("reports no results when every engine returns nothing", async () => {
     await expect(
       autoTextSearch("cat", 5, 10_000, undefined, {

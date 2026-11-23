@@ -50,8 +50,9 @@ bash scripts/install-lightpanda.sh
 ### Automatic renderer installation
 
 At `session_start`, the extension checks whether a runnable Lightpanda is already available. If
-none is configured, it runs `scripts/install-lightpanda.sh --no-configure` in the background; the
-first `web_fetch` or `web_search` call waits for the same install rather than racing it. There is no
+none is configured, it runs `scripts/install-lightpanda.sh --no-configure` in the background. Every
+`web_fetch` or `web_search` call that arrives while the install runs waits for it rather than probing,
+and cancelling a call stops only that wait: the install keeps running in the background. There is no
 postinstall and no bundled binary.
 
 Explicit configuration is respected and suppresses auto-install: `PI_LIGHTPANDA_BIN`,

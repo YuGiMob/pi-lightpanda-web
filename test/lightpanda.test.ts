@@ -18,6 +18,49 @@ const PUBLIC_PAGE =
 
 const PUBLIC_URL = "https://example.com/";
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = () => done();
+  });
+  return { promise, resolve };
+}
+
+async function withIsolatedLauncher<T>(run: () => Promise<T>): Promise<T> {
+  const previousDataHome = process.env.XDG_DATA_HOME;
+  const previousBinary = process.env.PI_LIGHTPANDA_BIN;
+  const dataHome = await mkdtemp(join(tmpdir(), "pi-lightpanda-install-"));
+  const installDir = join(dataHome, "pi-lightpanda-web", "lightpanda");
+  await mkdir(installDir, { recursive: true });
+  await writeFile(join(installDir, "lightpanda"), "#!/bin/sh\nexit 0\n");
+  process.env.XDG_DATA_HOME = dataHome;
+  delete process.env.PI_LIGHTPANDA_BIN;
+  try {
+    return await run();
+  } finally {
+    if (previousBinary === undefined) delete process.env.PI_LIGHTPANDA_BIN;
+    else process.env.PI_LIGHTPANDA_BIN = previousBinary;
+    if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previousDataHome;
+    await rm(dataHome, { recursive: true, force: true });
+  }
+}
+
+function gatedInstall() {
+  let installed = false;
+  const gate = deferred();
+  const probe = makeSpawn((call) => {
+    if (call.args.at(-1) !== "version") return { stdout: "", code: 1 };
+    return installed ? { stdout: "1.0.4", code: 0 } : { code: 1 };
+  });
+  const installer = async () => {
+    await gate.promise;
+    installed = true;
+    return true;
+  };
+  return { probe, installer, release: gate.resolve };
+}
+
 let binarySequence = 0;
 
 beforeEach(() => {
@@ -49,6 +92,98 @@ describe("automatic renderer installation", () => {
       return true;
     };
     expect(await ensureLightpandaInstalled({ spawn: spawnImpl, installer })).toBe(true);
+  });
+
+  it("joins an in-flight install instead of probing", async () => {
+    await withIsolatedLauncher(async () => {
+      const { probe, installer, release } = gatedInstall();
+      const install = ensureLightpandaInstalled({ spawn: probe.spawnImpl, installer });
+      const joinProbe = makeSpawn(() => ({ stdout: "1.0.4", code: 0 }));
+      const joined = ensureLightpandaInstalled({ spawn: joinProbe.spawnImpl });
+      let joinedSettled = false;
+      void joined.then(() => {
+        joinedSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(joinedSettled).toBe(false);
+      expect(joinProbe.calls).toEqual([]);
+      release();
+      expect(await install).toBe(true);
+      expect(await joined).toBe(true);
+      expect(joinProbe.calls).toEqual([]);
+    });
+  });
+
+  it("renders only after an in-flight install finishes", async () => {
+    await withIsolatedLauncher(async () => {
+      const { probe, installer, release } = gatedInstall();
+      const install = ensureLightpandaInstalled({ spawn: probe.spawnImpl, installer });
+      const serving = spawnRendering(PUBLIC_PAGE);
+      let rendered: string | null = null;
+      const pending = renderPageWithLightpanda(PUBLIC_URL, {
+        spawn: serving.spawnImpl,
+        timeoutMs: 5000,
+      }).then((out) => {
+        rendered = out;
+        return out;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(rendered).toBeNull();
+      expect(serving.calls).toEqual([]);
+      release();
+      expect(await install).toBe(true);
+      const out = await pending;
+      expect(out).not.toBeNull();
+      expect(out).toContain("Readable body text here.");
+      expect(out).toContain("URL: https://example.com/");
+      expect(out).toContain("Rendered via Lightpanda (local browser; nothing sent to a third party).");
+    });
+  });
+
+  it("stops waiting on abort while the install continues", async () => {
+    await withIsolatedLauncher(async () => {
+      const { probe, installer, release } = gatedInstall();
+      const install = ensureLightpandaInstalled({ spawn: probe.spawnImpl, installer });
+      const joinProbe = makeSpawn(() => ({ stdout: "1.0.4", code: 0 }));
+      const controller = new AbortController();
+      const joined = ensureLightpandaInstalled({ spawn: joinProbe.spawnImpl, signal: controller.signal });
+      const renderController = new AbortController();
+      renderController.abort();
+      const serving = spawnRendering(PUBLIC_PAGE);
+      const render = renderPageWithLightpanda(PUBLIC_URL, {
+        spawn: serving.spawnImpl,
+        signal: renderController.signal,
+      });
+      controller.abort();
+      expect(await joined).toBe(false);
+      expect(await render).toBe("Failed to render URL: cancelled.");
+      expect(joinProbe.calls).toEqual([]);
+      expect(serving.calls).toEqual([]);
+      release();
+      expect(await install).toBe(true);
+    });
+  });
+
+  it("re-probes a failed availability check after the negative ttl", async () => {
+    const now = vi.spyOn(Date, "now");
+    const startedAt = 1_000_000;
+    now.mockReturnValue(startedAt);
+    try {
+      let healthy = false;
+      const { spawnImpl, calls } = makeSpawn(() => (healthy ? { stdout: "1.0.4", code: 0 } : { code: 1 }));
+      const command = [`lightpanda-probe-ttl-${++binarySequence}`];
+      expect(await ensureLightpandaInstalled({ command, spawn: spawnImpl })).toBe(false);
+      expect(await ensureLightpandaInstalled({ command, spawn: spawnImpl })).toBe(false);
+      expect(calls.length).toBe(1);
+      healthy = true;
+      now.mockReturnValue(startedAt + 10_001);
+      expect(await ensureLightpandaInstalled({ command, spawn: spawnImpl })).toBe(true);
+      expect(calls.length).toBe(2);
+      expect(await ensureLightpandaInstalled({ command, spawn: spawnImpl })).toBe(true);
+      expect(calls.length).toBe(2);
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
