@@ -242,7 +242,8 @@ npm run check:package
 
 `npm run test:unit` runs the offline suite with stubbed renderer processes. `npm run test:live` needs
 a real Lightpanda binary and skips itself unless `PI_LIGHTPANDA_E2E=1` is set; it also exercises the
-direct PDF downloader. CI runs both on Linux, with the unit suite also on Windows and Node
+direct PDF downloader. Its search assertion skips itself, printing the reason, when no engine answers
+from the runner's network. CI runs both on Linux, with the unit suite also on Windows and Node
 22.19/24/26.
 
 ## License
