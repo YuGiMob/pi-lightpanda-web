@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { htmlToMarkdown } from "../html-to-md.ts";
 import { isAriaHeading } from "../html-to-md.ts";
+import { pageVisibleText } from "../html-to-md.ts";
 import { GITHUB_PAGE } from "./fixtures.ts";
 
 describe("html_to_markdown hidden elements", () => {
@@ -378,5 +379,22 @@ describe("listing pages", () => {
   it("does not let a two-card page be treated as a listing", () => {
     const out = htmlToMarkdown(`<body>${cards(2)}</body>`, true);
     expect(out).toMatch(/Story 0|Story 1/);
+  });
+});
+
+describe("pageVisibleText", () => {
+  it("skips script, style, nav and footer text, decodes entities and collapses whitespace", () => {
+    const html =
+      "<html><head><title>Doc</title><style>.hidden{display:none}</style></head><body>" +
+      "<nav>Nav link</nav><script>const marker = 1;</script>" +
+      "<p>Hello   &amp;\n\tworld</p>" +
+      "<footer>Footer junk</footer></body></html>";
+    const text = pageVisibleText(html);
+    expect(text).toBe("Hello & world");
+    expect(text).not.toContain("Doc");
+    expect(text).not.toContain("hidden");
+    expect(text).not.toContain("Nav link");
+    expect(text).not.toContain("marker");
+    expect(text).not.toContain("Footer junk");
   });
 });

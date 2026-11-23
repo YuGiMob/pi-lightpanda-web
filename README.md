@@ -76,6 +76,8 @@ results with weighted reciprocal-rank fusion (k=60):
   (`webSearch.maxPerHost`, off by default).
 - A transient empty render is retried once inside the sweep budget. Engines still in flight are
   aborted once enough results have arrived.
+- Sweeps are serialized inside one process: overlapping `web_search` calls queue and run one at a
+  time, so the engines never see concurrent bursts from the same host.
 - `websitePolicy` is enforced before rendering and again on every result URL; when a policy
   restricts domains, the query is scoped with rotating `site:` filters and the sweep overfetches.
 - Failure messages are stable and documented below.
@@ -172,6 +174,7 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
     "allowRemotePdf": true
   },
   "webSearch": {
+    "timeoutMs": 300000,
     "engines": ["brave", "ecosia"],
     "engineWeights": { "brave": 1, "ecosia": 1 },
     "maxPerHost": 0
@@ -186,7 +189,8 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 | Key | Default | Description |
 |---|---|---|
 | `piLightpanda.maxResults` / `webSearch.maxResults` | `5` | Default `maxResults` for `web_search` (clamped 1–20) |
-| `piLightpanda.timeoutMs` / `webFetch.timeoutMs` | `60000` fetch, `300000` search | Default `timeoutMs` when the tool param is absent (>= 1000) |
+| `piLightpanda.timeoutMs` / `webFetch.timeoutMs` | `60000` | Default `timeoutMs` for `web_fetch` when the tool param is absent (>= 1000) |
+| `piLightpanda.searchTimeoutMs` / `webSearch.timeoutMs` | `300000` | Default `timeoutMs` for a `web_search` sweep (>= 1000) |
 | `piLightpanda.allowPrivateAddresses` / `webFetch.allowPrivateAddresses` | `true` | Set `false` to pass `--block-private-networks` and refuse localhost/LAN targets |
 | `piLightpanda.allowLocalFiles` / `webFetch.allowLocalFiles` | `true` | Set `false` to refuse `file://`, absolute, `~/`, and `./` paths |
 | `piLightpanda.allowRemotePdf` / `webFetch.allowRemotePdf` | `true` | Set `false` to disable the direct PDF downloader and keep Lightpanda as the only network transport |
@@ -211,6 +215,8 @@ Environment overrides:
 | Empty query | `No query provided.` | Pass `query`. |
 | Cancelled | `Search cancelled.` / `Failed to render URL: cancelled.` | Retry only if unintended. |
 | Search timeout | `Search failed: the search engines (...) did not respond within N seconds.` | Retry, narrow the query, or raise `timeoutMs`. |
+| Engines refused the burst | `Search failed: brave (Failed to fetch URL: HTTP 429 Too Many Requests), ecosia (Failed to render URL: the page served a bot challenge instead of content).` | Retry later, space the queries out, or enable another engine with `/search-config`. |
+| No local renderer | `Search failed: the local renderer is not installed or is disabled.` | Run `bash scripts/install-lightpanda.sh`, set `PI_LIGHTPANDA_BIN` or `webRender.lightpandaPath`, or re-enable `webRender.lightpandaEnabled`. |
 | No results | `No results found.` | Rephrase, or enable another engine. |
 | Policy filtered everything | `No results found within the website access limits.` | Widen `websitePolicy`. |
 | Blocked URL | `Blocked: ...` | Respect it. |

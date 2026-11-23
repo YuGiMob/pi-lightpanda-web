@@ -64,6 +64,33 @@ describe("web_search tool", () => {
     });
     expect(result.content[0]).toMatchObject({ type: "text", text: "results" });
   });
+
+  it("keeps the fetch timeout out of web_search", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-lightpanda-idx-"));
+    const previousEnv = process.env.PI_CODING_AGENT_DIR;
+    try {
+      await writeFile(join(root, "settings.json"), JSON.stringify({ webFetch: { timeoutMs: 3000 } }));
+      process.env.PI_CODING_AGENT_DIR = root;
+      const webSearch = vi.fn(
+        async (_query: string | undefined, _options?: WebSearchOptions) => "results",
+      );
+      const { webSearchTool } = createWebTools({ webSearch });
+      await webSearchTool.execute("id", { query: "q" }, undefined, undefined, {} as never);
+      expect((webSearch.mock.calls[0][1] as WebSearchOptions).timeoutMs).toBeUndefined();
+      await webSearchTool.execute(
+        "id",
+        { query: "q", timeoutMs: 4000 },
+        undefined,
+        undefined,
+        {} as never,
+      );
+      expect((webSearch.mock.calls[1][1] as WebSearchOptions).timeoutMs).toBe(4000);
+    } finally {
+      if (previousEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousEnv;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("web_fetch tool", () => {

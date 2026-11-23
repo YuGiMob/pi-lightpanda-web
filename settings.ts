@@ -113,6 +113,11 @@ const FETCH_TIMEOUT_PATHS: string[][] = [
   ["webFetch", "timeoutMs"],
 ];
 
+const SEARCH_TIMEOUT_PATHS: string[][] = [
+  ["piLightpanda", "searchTimeoutMs"],
+  ["webSearch", "timeoutMs"],
+];
+
 const ALLOW_PRIVATE_ADDRESSES_PATHS: string[][] = [
   ["piLightpanda", "allowPrivateAddresses"],
   ["webFetch", "allowPrivateAddresses"],
@@ -220,10 +225,10 @@ export async function loadDefaultEngineWeights(cwd?: string): Promise<Record<str
 }
 
 export async function loadDefaultMaxPerHost(cwd?: string): Promise<number | undefined> {
-  return loadFetchSetting(cwd, MAX_PER_HOST_PATHS, (n) => n >= 0);
+  return loadNumericSetting(cwd, MAX_PER_HOST_PATHS, (n) => n >= 0);
 }
 
-async function loadFetchSetting(cwd: string | undefined, paths: string[][], valid: (n: number) => boolean): Promise<number | undefined> {
+async function loadNumericSetting(cwd: string | undefined, paths: string[][], valid: (n: number) => boolean): Promise<number | undefined> {
   let result: number | undefined;
   for (const data of await settingsEntries(cwd)) {
     const candidate = pickNumber(data, paths);
@@ -233,7 +238,11 @@ async function loadFetchSetting(cwd: string | undefined, paths: string[][], vali
 }
 
 export async function loadDefaultFetchTimeoutMs(cwd?: string): Promise<number | undefined> {
-  return loadFetchSetting(cwd, FETCH_TIMEOUT_PATHS, (n) => n >= 1000);
+  return loadNumericSetting(cwd, FETCH_TIMEOUT_PATHS, (n) => n >= 1000);
+}
+
+export async function loadDefaultSearchTimeoutMs(cwd?: string): Promise<number | undefined> {
+  return loadNumericSetting(cwd, SEARCH_TIMEOUT_PATHS, (n) => n >= 1000);
 }
 
 export async function loadDefaultFetchSettings(cwd?: string): Promise<{

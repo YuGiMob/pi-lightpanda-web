@@ -8,6 +8,7 @@ import {
   loadDefaultFetchSettings,
   loadDefaultMaxPerHost,
   loadDefaultMaxResults,
+  loadDefaultSearchTimeoutMs,
   loadLightpandaSettings,
 } from "../settings.ts";
 
@@ -147,5 +148,36 @@ describe("lightpanda settings", () => {
       JSON.stringify({ webRender: { lightpandaCommand: "wsl.exe -e /home/u/lp" } }),
     );
     expect((await loadLightpandaSettings()).command).toBeNull();
+  });
+});
+
+describe("search timeout settings", () => {
+  it("reads both search timeout keys with project override", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(
+      join(agent, "settings.json"),
+      JSON.stringify({ piLightpanda: { searchTimeoutMs: 120000 }, webSearch: { timeoutMs: 60000 } }),
+    );
+    expect(await loadDefaultSearchTimeoutMs()).toBe(120000);
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webSearch: { timeoutMs: 60000 } }));
+    expect(await loadDefaultSearchTimeoutMs()).toBe(60000);
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ webSearch: { timeoutMs: 240000 } }),
+    );
+    expect(await loadDefaultSearchTimeoutMs(cwd)).toBe(240000);
+  });
+
+  it("ignores values below 1000 and returns undefined when unset", async () => {
+    expect(await loadDefaultSearchTimeoutMs()).toBeUndefined();
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webSearch: { timeoutMs: 999 } }));
+    expect(await loadDefaultSearchTimeoutMs()).toBeUndefined();
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ piLightpanda: { searchTimeoutMs: 1000 } }));
+    expect(await loadDefaultSearchTimeoutMs()).toBe(1000);
   });
 });

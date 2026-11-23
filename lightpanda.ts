@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STATUS_CODES } from "node:http";
-import { pagePrefixedMarkdown, visibleChars } from "./html-to-md.ts";
+import { pagePrefixedMarkdown, pageVisibleText, visibleChars } from "./html-to-md.ts";
 import {
   checkUrlAccess,
   MAX_SIGNAL_TIMEOUT_MS,
@@ -437,12 +437,26 @@ export async function renderPageWithLightpanda(
   return withProvenance(rendered, fetched.finalUrl);
 }
 
+export type HtmlRenderOutcome = { ok: true; html: string } | { ok: false; message: string } | null;
+
+export async function renderPageHtmlOutcome(
+  url: string,
+  options: LightpandaRenderOptions = {},
+): Promise<HtmlRenderOutcome> {
+  const fetched = await fetchDump(url, options, "html");
+  if (fetched === null) return null;
+  if (!fetched.ok) return { ok: false, message: fetched.message };
+  const html = fetched.raw.trim();
+  if (!html) return { ok: false, message: NO_TEXT_MESSAGE };
+  const text = looksLikeMarkup(html, fetched.contentType) ? pageVisibleText(html) : html;
+  if (looksLikeInterstitial(text)) return { ok: false, message: CHALLENGE_MESSAGE };
+  return { ok: true, html };
+}
+
 export async function renderPageHtml(
   url: string,
   options: LightpandaRenderOptions = {},
 ): Promise<string | null> {
-  const fetched = await fetchDump(url, options, "html");
-  if (fetched === null || !fetched.ok) return null;
-  const html = fetched.raw.trim();
-  return html || null;
+  const outcome = await renderPageHtmlOutcome(url, options);
+  return outcome !== null && outcome.ok ? outcome.html : null;
 }

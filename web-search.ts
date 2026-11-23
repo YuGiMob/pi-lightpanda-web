@@ -4,15 +4,16 @@ import {
   autoTextSearch,
   EmptySweepError,
   SearchCancelled,
+  SearchRenderError,
   SearchTimeoutError,
   type SearchEngineOptions,
   type SearchRenderPage,
   type SearchResult,
 } from "./engines.ts";
-import { renderPageHtml, type LightpandaSettings } from "./lightpanda.ts";
-import { loadDefaultMaxResults, loadLightpandaSettings } from "./settings.ts";
+import { renderPageHtmlOutcome, type LightpandaSettings } from "./lightpanda.ts";
+import { loadDefaultMaxResults, loadDefaultSearchTimeoutMs, loadLightpandaSettings } from "./settings.ts";
 
-export { EmptySweepError, SearchCancelled, SearchTimeoutError } from "./engines.ts";
+export { EmptySweepError, SearchCancelled, SearchRenderError, SearchTimeoutError } from "./engines.ts";
 
 export const SEARCH_TIMEOUT_MS = 300_000;
 const MAX_RESULTS = 5;
@@ -23,12 +24,17 @@ export const EMPTY_SEARCH_RESULTS = [
   "No results found within the website access limits.",
 ];
 
+export interface SearchClientOptions extends SearchEngineOptions {
+  cwd?: string;
+  settings?: LightpandaSettings | null;
+}
+
 export type SearchClient = (
   query: string,
   maxResults: number,
   signal?: AbortSignal,
   timeoutMs?: number,
-  options?: SearchEngineOptions,
+  options?: SearchClientOptions,
 ) => Promise<SearchResult[]>;
 
 async function configuredRenderPage(
@@ -37,14 +43,17 @@ async function configuredRenderPage(
 ): Promise<SearchRenderPage | undefined> {
   const resolved = settings ?? (await loadLightpandaSettings(cwd).catch(() => null));
   if (!resolved?.enabled) return undefined;
-  return (url, options) =>
-    renderPageHtml(url, {
+  return async (url, options) => {
+    const outcome = await renderPageHtmlOutcome(url, {
       timeoutMs: options.timeoutMs,
       signal: options.signal,
       websitePolicy: options.websitePolicy,
       allowPrivateAddresses: options.allowPrivateAddresses,
       settings: resolved,
     });
+    if (outcome === null) return null;
+    return outcome.ok ? outcome.html : { error: outcome.message };
+  };
 }
 
 export async function searchSweep(
@@ -52,10 +61,11 @@ export async function searchSweep(
   maxResults = MAX_RESULTS,
   signal?: AbortSignal,
   timeoutMs = SEARCH_TIMEOUT_MS,
-  options: SearchEngineOptions & { cwd?: string } = {},
+  options: SearchClientOptions = {},
 ): Promise<SearchResult[]> {
   if (signal?.aborted) throw new SearchCancelled();
-  const renderPage = options.renderPage ?? (await configuredRenderPage(options.cwd));
+  const renderPage = options.renderPage ?? (await configuredRenderPage(options.cwd, options.settings));
+  if (!renderPage) throw new SearchRenderError({}, "the local renderer is not installed or is disabled");
   return autoTextSearch(query, maxResults, timeoutMs, signal, { ...options, renderPage });
 }
 
@@ -83,7 +93,7 @@ export async function webSearch(
   const rawMaxResults = options.maxResults ?? (await loadDefaultMaxResults(options.cwd));
   const saneMax = Number.isFinite(rawMaxResults) ? Math.floor(rawMaxResults as number) : MAX_RESULTS;
   const maxResults = Math.min(20, Math.max(1, saneMax));
-  const rawTimeout = options.timeoutMs ?? SEARCH_TIMEOUT_MS;
+  const rawTimeout = options.timeoutMs ?? (await loadDefaultSearchTimeoutMs(options.cwd)) ?? SEARCH_TIMEOUT_MS;
   const flooredTimeout = Number.isFinite(rawTimeout) ? Math.floor(rawTimeout as number) : SEARCH_TIMEOUT_MS;
   const timeoutMs = flooredTimeout >= 1 ? flooredTimeout : SEARCH_TIMEOUT_MS;
   const signal = options.signal;
@@ -108,6 +118,8 @@ export async function webSearch(
       maxPerHost: options.maxPerHost,
       renderPage,
       allowPrivateAddresses: options.allowPrivateAddresses,
+      cwd: options.cwd,
+      settings: options.settings,
     });
     if (signal?.aborted) return "Search cancelled.";
     if (!results.length) return EMPTY_SEARCH_RESULTS[0];
@@ -127,6 +139,10 @@ export async function webSearch(
   }
 }
 
+function stripTrailingPeriods(text: string): string {
+  return text.replace(/\.+$/, "");
+}
+
 export function searchFailureMessage(exc: unknown, timeoutMs = SEARCH_TIMEOUT_MS): string {
   if (exc instanceof SearchCancelled) return "Search cancelled.";
   if (exc instanceof SearchTimeoutError) {
@@ -136,6 +152,13 @@ export function searchFailureMessage(exc: unknown, timeoutMs = SEARCH_TIMEOUT_MS
   }
   if (exc instanceof EmptySweepError || (exc instanceof Error && exc.message.includes("No results found"))) {
     return EMPTY_SEARCH_RESULTS[0];
+  }
+  if (exc instanceof SearchRenderError) {
+    const entries = Object.keys(exc.failures ?? {})
+      .sort()
+      .map((name) => `${name} (${stripTrailingPeriods(exc.failures[name] ?? "")})`);
+    const detail = entries.length ? entries.join(", ") : stripTrailingPeriods(exc.detail || exc.message);
+    return `Search failed: ${detail}.`;
   }
   return `Search failed: ${exc instanceof Error ? exc.message : String(exc)}`;
 }

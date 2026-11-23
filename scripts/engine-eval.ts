@@ -6,6 +6,7 @@ import {
   canonicalizeHref,
   capByHost,
   registrableDomain,
+  SearchRenderError,
   type SearchRenderPage,
   type SearchResult,
 } from "../engines.ts";
@@ -114,7 +115,10 @@ async function runEngine(engine: string, query: string): Promise<EngineRun> {
       engine,
       results: [],
       ms: Date.now() - started,
-      error: String((error as Error)?.message ?? error).slice(0, 60),
+      error:
+        error instanceof SearchRenderError
+          ? Object.values(error.failures).join("; ") || error.detail || error.message
+          : String((error as Error)?.message ?? error).slice(0, 60),
     };
   }
 }

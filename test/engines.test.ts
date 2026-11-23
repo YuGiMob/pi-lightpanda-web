@@ -4,6 +4,7 @@ import {
   EmptySweepError,
   ResultsAggregator,
   SearchCancelled,
+  SearchRenderError,
   SearchTimeoutError,
   TEXT_ENGINES,
   autoTextSearch,
@@ -479,5 +480,108 @@ describe("sweep", () => {
         renderPage: async () => BING_HTML,
       }),
     ).rejects.toThrow(SearchCancelled);
+  });
+
+  it("serializes overlapping sweeps so their renders never interleave", async () => {
+    const log: string[] = [];
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const renderFirst: SearchRenderPage = async (url) => {
+      const name = url.includes("bing") ? "bing" : "yahoo";
+      log.push(`start:${name}`);
+      await delay(10);
+      log.push(`end:${name}`);
+      return name === "bing" ? BING_HTML : YAHOO_HTML;
+    };
+    const renderSecond: SearchRenderPage = async (url) => {
+      const name = url.includes("brave") ? "brave" : "ecosia";
+      log.push(`start:${name}`);
+      await delay(10);
+      log.push(`end:${name}`);
+      return name === "brave" ? BRAVE_HTML : ECOSIA_HTML;
+    };
+    const [first, second] = await Promise.all([
+      autoTextSearch("cat", 5, 10_000, undefined, { engines: ["bing", "yahoo"], renderPage: renderFirst }),
+      autoTextSearch("cat", 5, 10_000, undefined, { engines: ["brave", "ecosia"], renderPage: renderSecond }),
+    ]);
+    expect(first.map((result) => result.href)).toEqual([
+      "https://example.com/bing",
+      "https://example.com/yahoo",
+    ]);
+    expect(second.map((result) => result.href)).toEqual([
+      "https://example.com/brave",
+      "https://example.com/ecosia",
+    ]);
+    const firstEvents = log.filter((entry) => entry.endsWith(":bing") || entry.endsWith(":yahoo"));
+    const secondEvents = log.filter((entry) => entry.endsWith(":brave") || entry.endsWith(":ecosia"));
+    expect(firstEvents).toHaveLength(4);
+    expect(secondEvents).toHaveLength(4);
+    expect(log.slice(0, firstEvents.length)).toEqual(firstEvents);
+    expect(log.slice(firstEvents.length)).toEqual(secondEvents);
+  });
+
+  it("cancels a queued sweep before it renders", async () => {
+    let releaseFirst: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = () => resolve();
+    });
+    const rendered: string[] = [];
+    const first = autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing"],
+      renderPage: async () => {
+        rendered.push("bing");
+        await gate;
+        return BING_HTML;
+      },
+    });
+    const controller = new AbortController();
+    const second = autoTextSearch("cat", 5, 10_000, controller.signal, {
+      engines: ["yahoo"],
+      renderPage: async () => {
+        rendered.push("yahoo");
+        return YAHOO_HTML;
+      },
+    });
+    const third = autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["ecosia"],
+      renderPage: async () => {
+        rendered.push("ecosia");
+        return ECOSIA_HTML;
+      },
+    });
+    const cancelled = expect(second).rejects.toThrow(SearchCancelled);
+    controller.abort();
+    await cancelled;
+    expect(rendered).toEqual(["bing"]);
+    releaseFirst();
+    expect((await first).length).toBe(1);
+    expect((await third).length).toBe(1);
+    expect(rendered).toEqual(["bing", "ecosia"]);
+  });
+
+  it("records render errors without retrying", async () => {
+    const requested: string[] = [];
+    const error: unknown = await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing"],
+      renderPage: async (url) => {
+        requested.push(url);
+        return { error: "Failed to fetch URL: HTTP 429 Too Many Requests." };
+      },
+    }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(SearchRenderError);
+    expect((error as SearchRenderError).failures).toEqual({
+      bing: "Failed to fetch URL: HTTP 429 Too Many Requests.",
+    });
+    expect(requested.length).toBe(1);
+  });
+
+  it("keeps results when another engine reports a render error", async () => {
+    const results = await autoTextSearch("cat", 5, 10_000, undefined, {
+      engines: ["bing", "yahoo"],
+      renderPage: async (url) => {
+        if (url.includes("yahoo")) return { error: "Failed to render URL: timed out." };
+        return BING_HTML;
+      },
+    });
+    expect(results.map((result) => result.href)).toEqual(["https://example.com/bing"]);
   });
 });

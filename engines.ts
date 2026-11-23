@@ -22,6 +22,16 @@ export class SearchCancelled extends Error {
   }
 }
 
+export class SearchRenderError extends Error {
+  failures: Record<string, string>;
+  detail: string;
+  constructor(failures: Record<string, string> = {}, detail = "") {
+    super("render failed");
+    this.failures = failures;
+    this.detail = detail;
+  }
+}
+
 export interface SearchResult {
   title: string;
   href: string;
@@ -474,6 +484,7 @@ export function extractResults(
   return results;
 }
 
+export type SearchRenderOutcome = string | { error: string } | null;
 export type SearchRenderPage = (
   url: string,
   options: {
@@ -482,7 +493,7 @@ export type SearchRenderPage = (
     websitePolicy?: WebsitePolicy | null;
     allowPrivateAddresses?: boolean;
   },
-) => Promise<string | null>;
+) => Promise<SearchRenderOutcome>;
 
 export interface SearchEngineOptions {
   policy?: WebsitePolicy | null;
@@ -506,7 +517,7 @@ export interface Engine {
     ctx: EngineContext,
     timeoutMs: number,
     signal?: AbortSignal,
-  ): Promise<SearchResult[] | null>;
+  ): Promise<SearchResult[] | { error: string } | null>;
 }
 
 function searchUrl(url: string, params: Record<string, string>): string {
@@ -521,15 +532,21 @@ async function renderEnginePage(
   timeoutMs: number,
   signal: AbortSignal | undefined,
   parse: (html: string) => SearchResult[],
-): Promise<SearchResult[] | null> {
+): Promise<SearchResult[] | { error: string } | null> {
   if (!ctx.renderPage) return null;
-  const html = await ctx.renderPage(url, {
+  const outcome = await ctx.renderPage(url, {
     timeoutMs,
     signal,
     websitePolicy: ctx.policy ?? null,
     allowPrivateAddresses: ctx.allowPrivateAddresses,
   });
-  return html === null ? null : parse(html);
+  if (outcome === null) return null;
+  if (typeof outcome === "string") return parse(outcome);
+  return outcome;
+}
+
+function isRenderFailure(value: SearchResult[] | { error: string } | null): value is { error: string } {
+  return value !== null && !Array.isArray(value);
 }
 
 function decodeBingHref(href: string): string {
@@ -737,7 +754,7 @@ function shuffledEngines(engines: Engine[]): Engine[] {
   return shuffled;
 }
 
-export async function autoTextSearch(
+async function runTextSearch(
   query: string,
   maxResults: number,
   timeoutMs: number,
@@ -768,6 +785,7 @@ export async function autoTextSearch(
     }
   }
   const timedOutProviders = new Set<string>();
+  const renderFailures: Record<string, string> = {};
   let cancelled = false;
   let deadlineReached = false;
   const deadlineTimer = setTimeout(() => {
@@ -784,7 +802,8 @@ export async function autoTextSearch(
       return;
     }
     let results: SearchResult[] | null = null;
-    for (let attempt = 0; attempt < 2 && results === null; attempt++) {
+    let renderFailure: string | null = null;
+    for (let attempt = 0; attempt < 2 && results === null && renderFailure === null; attempt++) {
       if (controller.signal.aborted) {
         if (signal?.aborted) cancelled = true;
         else if (deadlineReached) timedOutProviders.add(engine.name);
@@ -799,7 +818,9 @@ export async function autoTextSearch(
         ? AbortSignal.any([signal, controller.signal])
         : controller.signal;
       try {
-        results = await engine.render(query, ctx, Math.max(1, attemptBudget), engineSignal);
+        const outcome = await engine.render(query, ctx, Math.max(1, attemptBudget), engineSignal);
+        if (isRenderFailure(outcome)) renderFailure = outcome.error;
+        else results = outcome;
       } catch (e) {
         if (e instanceof SearchCancelled) {
           if (controller.signal.aborted && !signal?.aborted) return;
@@ -816,12 +837,16 @@ export async function autoTextSearch(
           return;
         }
       }
-      if (results === null && attempt === 0) {
+      if (results === null && renderFailure === null && attempt === 0) {
         const backoff = Math.min(250, Math.max(0, deadline - Date.now()));
         if (backoff > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, backoff));
         }
       }
+    }
+    if (renderFailure !== null) {
+      renderFailures[engine.name] = renderFailure;
+      return;
     }
     if (results === null && Date.now() >= deadline) timedOutProviders.add(engine.name);
     if (results && results.length) {
@@ -861,5 +886,61 @@ export async function autoTextSearch(
   const results = capByHost(aggregator.ranked(), maxResults, maxPerHost);
   if (results.length) return results;
   if (timedOutProviders.size) throw new SearchTimeoutError([...timedOutProviders].sort());
+  if (Object.keys(renderFailures).length) throw new SearchRenderError(renderFailures);
   throw new EmptySweepError();
+}
+
+let sweepSlotBusy = false;
+const sweepSlotWaiters: (() => void)[] = [];
+
+function releaseSweepSlot(): void {
+  const next = sweepSlotWaiters.shift();
+  if (next) next();
+  else sweepSlotBusy = false;
+}
+
+function acquireSweepSlot(signal?: AbortSignal): Promise<(() => void) | null> {
+  return new Promise<(() => void) | null>((resolve) => {
+    if (signal?.aborted) {
+      resolve(null);
+      return;
+    }
+    const onAbort = () => {
+      const index = sweepSlotWaiters.indexOf(grant);
+      if (index !== -1) sweepSlotWaiters.splice(index, 1);
+      resolve(null);
+    };
+    const grant = () => {
+      signal?.removeEventListener("abort", onAbort);
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        releaseSweepSlot();
+      });
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (sweepSlotBusy) sweepSlotWaiters.push(grant);
+    else {
+      sweepSlotBusy = true;
+      grant();
+    }
+  });
+}
+
+export async function autoTextSearch(
+  query: string,
+  maxResults: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  options: SearchEngineOptions = {},
+): Promise<SearchResult[]> {
+  const release = await acquireSweepSlot(signal);
+  if (release === null) throw new SearchCancelled();
+  try {
+    if (signal?.aborted) throw new SearchCancelled();
+    return await runTextSearch(query, maxResults, timeoutMs, signal, options);
+  } finally {
+    release();
+  }
 }

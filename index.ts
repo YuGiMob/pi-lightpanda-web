@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { openSearchConfig } from "./search-config.ts";
 import { collapseWhitespace } from "./html-to-md.ts";
-import { SEARCH_TIMEOUT_MS, webSearch as defaultWebSearch } from "./web-search.ts";
+import { webSearch as defaultWebSearch } from "./web-search.ts";
 import { ensureLightpandaInstalled } from "./lightpanda.ts";
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -111,7 +111,7 @@ export function createWebTools(deps: WebToolsDeps = {}) {
         ]);
         const text = await webSearch(params.query, {
           signal: signal ?? undefined,
-          timeoutMs: timeoutParam ?? fetchSettings.timeoutMs ?? SEARCH_TIMEOUT_MS,
+          timeoutMs: timeoutParam,
           maxResults: positiveNumber(params.maxResults),
           cwd,
           engines,

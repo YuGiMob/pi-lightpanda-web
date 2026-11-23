@@ -7,6 +7,7 @@ import {
   lightpandaLaunch,
   ensureLightpandaInstalled,
   renderPageHtml,
+  renderPageHtmlOutcome,
   renderPageWithLightpanda,
 } from "../lightpanda.ts";
 import { makeSpawn, spawnFailing, spawnRendering } from "./helpers.ts";
@@ -261,6 +262,50 @@ describe("renderPageHtml", () => {
     expect(calls).toEqual([]);
     const empty = spawnRendering("");
     expect(await renderPageHtml(PUBLIC_URL, { spawn: empty.spawnImpl })).toBeNull();
+  });
+});
+
+describe("renderPageHtmlOutcome", () => {
+  it("reports the http status message for an error page", async () => {
+    const { spawnImpl } = spawnRendering("<html><body>not found</body></html>", {
+      status: 404,
+      headers: { "content-type": "text/html" },
+    });
+    expect(await renderPageHtmlOutcome("https://example.com/missing", { spawn: spawnImpl })).toEqual({
+      ok: false,
+      message: "Failed to fetch URL: HTTP 404 Not Found",
+    });
+  });
+
+  it("returns null when no binary is available", async () => {
+    const { spawnImpl } = makeSpawn(() => ({ errorCode: "ENOENT" }));
+    expect(await renderPageHtmlOutcome(PUBLIC_URL, { spawn: spawnImpl })).toBeNull();
+  });
+
+  it("reports an empty dump as no readable text", async () => {
+    const { spawnImpl } = spawnRendering("");
+    expect(await renderPageHtmlOutcome(PUBLIC_URL, { spawn: spawnImpl })).toEqual({
+      ok: false,
+      message: "(page returned no readable text)",
+    });
+  });
+
+  it("returns the trimmed html for a good page", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE);
+    expect(await renderPageHtmlOutcome("https://example.com/search", { spawn: spawnImpl })).toEqual({
+      ok: true,
+      html: PUBLIC_PAGE,
+    });
+  });
+
+  it("reports a bot challenge page", async () => {
+    const { spawnImpl } = spawnRendering(
+      "<html><head><title>DuckDuckGo</title></head><body><p>Unfortunately, bots use DuckDuckGo too.</p><p>Please complete the following challenge.</p></body></html>",
+    );
+    expect(await renderPageHtmlOutcome(PUBLIC_URL, { spawn: spawnImpl })).toEqual({
+      ok: false,
+      message: "Failed to render URL: the page served a bot challenge instead of content.",
+    });
   });
 });
 

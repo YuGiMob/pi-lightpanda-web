@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EMPTY_SEARCH_RESULTS,
   EmptySweepError,
+  SearchRenderError,
   SearchTimeoutError,
   formatSearchResults,
   searchFailureMessage,
@@ -10,6 +14,20 @@ import {
   type SearchClient,
 } from "../web-search.ts";
 import type { SearchResult } from "../engines.ts";
+
+let root: string;
+const initialAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "pi-lightpanda-search-"));
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+});
+
+afterEach(async () => {
+  if (initialAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = initialAgentDir;
+  await rm(root, { recursive: true, force: true });
+});
 
 const ARXIV_ONLY = { allowedDomains: ["arxiv.org"], blockedDomains: [] };
 
@@ -178,5 +196,62 @@ describe("searchSweep", () => {
       renderPage: async () => html,
     });
     expect(results).toEqual([{ title: "Hit", href: "https://example.com/hit", body: "Snippet." }]);
+  });
+});
+
+describe("search render failures", () => {
+  it("pins both render-failure formats", () => {
+    expect(searchFailureMessage(new SearchRenderError({}, "the local renderer is not installed or is disabled"))).toBe(
+      "Search failed: the local renderer is not installed or is disabled.",
+    );
+    expect(
+      searchFailureMessage(
+        new SearchRenderError({
+          ecosia: "Failed to render URL: the page served a bot challenge instead of content.",
+          brave: "Failed to fetch URL: HTTP 429 Too Many Requests",
+        }),
+      ),
+    ).toBe(
+      "Search failed: brave (Failed to fetch URL: HTTP 429 Too Many Requests), ecosia (Failed to render URL: the page served a bot challenge instead of content).",
+    );
+  });
+
+  it("returns the per-engine message for a client render failure", async () => {
+    const client = fakeClient(() => {
+      throw new SearchRenderError({
+        ecosia: "Failed to render URL: blocked.",
+        brave: "Failed to fetch URL: HTTP 429 Too Many Requests",
+      });
+    });
+    expect(await webSearch("q", { client })).toBe(
+      "Search failed: brave (Failed to fetch URL: HTTP 429 Too Many Requests), ecosia (Failed to render URL: blocked).",
+    );
+  });
+
+  it("reports a missing local renderer", async () => {
+    const cwd = join(root, "project");
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ webRender: { lightpandaEnabled: false } }),
+    );
+    expect(await webSearch("q", { cwd })).toBe(
+      "Search failed: the local renderer is not installed or is disabled.",
+    );
+  });
+
+  it("reads the search timeout from settings and lets an explicit param win", async () => {
+    const agent = join(root, "agent");
+    await mkdir(agent, { recursive: true });
+    await writeFile(join(agent, "settings.json"), JSON.stringify({ webSearch: { timeoutMs: 9000 } }));
+    const client = fakeClient(() => {
+      throw new SearchTimeoutError();
+    });
+    expect(await webSearch("q", { client })).toBe(
+      "Search failed: the search engines did not respond within 9 seconds.",
+    );
+    expect(await webSearch("q", { client, timeoutMs: 7000 })).toBe(
+      "Search failed: the search engines did not respond within 7 seconds.",
+    );
   });
 });

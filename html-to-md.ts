@@ -1188,6 +1188,30 @@ const META_KEYS: Record<string, keyof PageMeta> = Object.assign(Object.create(nu
   "og:description": "description",
 });
 
+export function pageVisibleText(html: string): string {
+  const parts: string[] = [];
+  let skipDepth = 0;
+  feedHtml(html, {
+    handleStartTag(name: string) {
+      if (SKIP_TAGS.has(name)) skipDepth++;
+    },
+    handleStartEndTag() {},
+    handleEndTag(name: string) {
+      if (SKIP_TAGS.has(name) && skipDepth > 0) skipDepth--;
+    },
+    handleData(text: string) {
+      if (!skipDepth) parts.push(text);
+    },
+    handleEntityRef(name: string) {
+      if (!skipDepth) parts.push(decodeHtmlEntities(`&${name};`));
+    },
+    handleCharRef(name: string) {
+      if (!skipDepth) parts.push(decodeHtmlEntities(`&#${name};`));
+    },
+  });
+  return collapseWhitespace(parts.join(""));
+}
+
 function extractPageTitle(html: string): string {
   let inTitle = false;
   let done = false;
