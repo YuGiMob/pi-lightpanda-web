@@ -89,7 +89,6 @@ some engines cannot be used:
 
 | Engine | Status | Backend |
 |---|---|---|
-| Brave | Default | Brave's own independent index |
 | Brave | Default | Brave's own independent index; result links are cloaked behind `/go/v1` and resolved through the interstitial page |
 | Bing | Default | Bing's index; returns absolute result links and stays available through Lightpanda |
 | Ecosia | Opt-in | Google-provided results (each result is labelled `provider="GOOGLE"`); answers with a 403 Cloudflare bot challenge from some networks |
@@ -110,8 +109,9 @@ a query-specific term such as `3.14`, `hnsw`, or `io_uring`) is Brave **0.97**, 
 **0.72**, and Bing **0.25**. Bing's domain-level precision (0.42) looks close to the others only because
 broad entity pages such as `python.org` still land on an expected domain; it is not answering the query.
 Ecosia answers intermittently: the rest of the time Cloudflare returns `403 BotChallenge`, which Lightpanda
-reports as `the page served a bot challenge instead of content`. Because of that, the defaults are Brave +
-Bing; Ecosia and Yahoo stay one `/search-config` toggle away.
+reports as `the page served a bot challenge instead of content`. That is why the defaults stay Brave and Bing:
+Bing is the only engine besides Brave that answers reliably through Lightpanda. Yahoo ranks better than Bing
+on this set but stays opt-in, and Ecosia stays opt-in because Cloudflare challenges it from some networks.
 
 Use `/search-config` to enable or disable engines; Ecosia and Yahoo are available as opt-ins. At least one engine must stay on.
 
