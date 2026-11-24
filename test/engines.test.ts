@@ -36,6 +36,37 @@ const BRAVE_HTML = `
   </div>
 `;
 
+const BRAVE_SERP_HTML = `
+  <div class="snippet svelte-jmfu5f" data-pos="0" data-type="web">
+    <div class="result-body svelte-1rq4ngz">
+      <div class="result-wrapper svelte-1rq4ngz">
+        <div class="result-content svelte-1rq4ngz">
+          <a href="/go/v1#TOKENONE" target="_self" class="svelte-14r20fy l1">
+            <div class="site-name-wrapper svelte-on1hvy">
+              <div class="site-name-content svelte-on1hvy">
+                <div class="desktop-small-semibold t-secondary text-ellipsis">Python</div>
+                <div class="url-wrapper svelte-on1hvy">
+                  <cite class="snippet-url desktop-small-regular t-tertiary svelte-on1hvy">https://docs.python.org <span class="text-ellipsis">› 3  › library  › asyncio.html</span></cite>
+                </div>
+              </div>
+            </div>
+            <div class="title search-snippet-title line-clamp-1 svelte-14r20fy" title="asyncio — Asynchronous I/O">asyncio — Asynchronous I/O</div>
+          </a>
+          <div class="generic-snippet svelte-1cwdgg3">
+            <div class="content desktop-default-regular">asyncio is <strong>used</strong> as a foundation.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+`;
+
+const BRAVE_CLOAK_HTML = `
+  <h1>Check this link before continuing</h1>
+  <p>The link you followed is sending you to <strong class="host">docs.python.org</strong>:
+    <a class="destination svelte-12edz7s" href="https://docs.python.org/3/library/asyncio.html">https://docs.python.org/3/library/asyncio.html</a></p>
+`;
+
 const YAHOO_HTML = `
   <li>
     <a href="https://example.com/yahoo"><h3 class="title">Yahoo result</h3></a>
@@ -181,7 +212,7 @@ describe("engine renderers", () => {
     expect(url.searchParams.get("q")).toBe("unsloth studio");
   });
 
-  it("parses brave results", async () => {
+  it("parses brave results from the legacy layout", async () => {
     const results = await engine("brave").render(
       "unsloth studio",
       {
@@ -197,6 +228,56 @@ describe("engine renderers", () => {
     );
     expect(results).toEqual([
       { title: "Brave result", href: "https://example.com/brave", body: "Brave snippet." },
+    ]);
+  });
+
+  it("parses the current brave layout and resolves cloaked links", async () => {
+    const requested: string[] = [];
+    const results = await engine("brave").render(
+      "python asyncio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        maxResults: 5,
+        renderPage: async (url) => {
+          requested.push(url);
+          return url.includes("/go/v1/") ? BRAVE_CLOAK_HTML : BRAVE_SERP_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      {
+        title: "asyncio — Asynchronous I/O",
+        href: "https://docs.python.org/3/library/asyncio.html",
+        body: "asyncio is used as a foundation.",
+      },
+    ]);
+    expect(requested).toEqual([
+      expect.stringContaining("search.brave.com/search"),
+      "https://search.brave.com/go/v1/TOKENONE",
+    ]);
+  });
+
+  it("falls back to the cite host when a cloaked link does not resolve", async () => {
+    const results = await engine("brave").render(
+      "python asyncio",
+      {
+        region: "us-en",
+        safesearch: "moderate",
+        renderPage: async (url) => {
+          if (url.includes("/go/v1/")) return { error: "Failed to render URL: timed out." };
+          return BRAVE_SERP_HTML;
+        },
+      },
+      5000,
+    );
+    expect(results).toEqual([
+      {
+        title: "asyncio — Asynchronous I/O",
+        href: "https://docs.python.org",
+        body: "asyncio is used as a foundation.",
+      },
     ]);
   });
 
@@ -360,7 +441,7 @@ describe("registrableDomain", () => {
 
 describe("sweep", () => {
   it("ships the expected default engines", () => {
-    expect([...DEFAULT_ENGINE_NAMES]).toEqual(["brave", "ecosia"]);
+    expect([...DEFAULT_ENGINE_NAMES]).toEqual(["brave", "bing"]);
     expect(TEXT_ENGINES.map((candidate) => candidate.name)).toEqual(["bing", "brave", "yahoo", "ecosia"]);
   });
 
@@ -372,9 +453,9 @@ describe("sweep", () => {
         return fixtureFor(url);
       }),
     });
-    expect(results.map((result) => result.href)).toEqual([
+    expect(results.map((result) => result.href).sort()).toEqual([
+      "https://example.com/bing",
       "https://example.com/brave",
-      "https://example.com/ecosia",
     ]);
     expect(requested.length).toBe(2);
   });

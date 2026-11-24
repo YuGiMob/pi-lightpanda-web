@@ -17,8 +17,8 @@ const ENGINE_LABELS: Record<string, string> = {
 const ENGINE_HINTS: Record<string, string> = {
   bing: "On by default. Bing's result page, rendered locally with Lightpanda.",
   brave: "On by default. Brave's independent index, rendered locally with Lightpanda; Brave may serve a challenge page from some networks.",
-  yahoo: "On by default. Yahoo's result page, rendered locally with Lightpanda.",
-  ecosia: "On by default. Ecosia's result page, rendered locally with Lightpanda.",
+  yahoo: "Opt-in. Yahoo's result page, rendered locally with Lightpanda.",
+  ecosia: "Opt-in. Ecosia's result page, rendered locally with Lightpanda; Cloudflare challenges it from some networks.",
 };
 
 const ENGINE_SETTING_PATHS = [

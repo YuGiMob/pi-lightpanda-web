@@ -507,6 +507,7 @@ export interface SearchEngineOptions {
 export interface EngineContext extends SearchEngineOptions {
   region: string;
   safesearch: string;
+  maxResults?: number;
 }
 
 export interface Engine {
@@ -526,6 +527,21 @@ function searchUrl(url: string, params: Record<string, string>): string {
   return target.toString();
 }
 
+async function renderPageHtml(
+  url: string,
+  ctx: EngineContext,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<string | { error: string } | null> {
+  if (!ctx.renderPage) return null;
+  return ctx.renderPage(url, {
+    timeoutMs,
+    signal,
+    websitePolicy: ctx.policy ?? null,
+    allowPrivateAddresses: ctx.allowPrivateAddresses,
+  });
+}
+
 async function renderEnginePage(
   url: string,
   ctx: EngineContext,
@@ -533,14 +549,7 @@ async function renderEnginePage(
   signal: AbortSignal | undefined,
   parse: (html: string) => SearchResult[],
 ): Promise<SearchResult[] | { error: string } | null> {
-  if (!ctx.renderPage) return null;
-  const outcome = await ctx.renderPage(url, {
-    timeoutMs,
-    signal,
-    websitePolicy: ctx.policy ?? null,
-    allowPrivateAddresses: ctx.allowPrivateAddresses,
-  });
-  if (outcome === null) return null;
+  const outcome = await renderPageHtml(url, ctx, timeoutMs, signal);
   if (typeof outcome === "string") return parse(outcome);
   return outcome;
 }
@@ -574,12 +583,112 @@ function parseBingResults(html: string): SearchResult[] {
     .filter((result) => result.title && /^https?:\/\//.test(result.href));
 }
 
-function parseBraveResults(html: string): SearchResult[] {
-  return extractResults(html, "//div[contains(@class, 'result-wrapper')]", {
-    title: ".//div[contains(@class, 'title')]//text()",
-    href: ".//a[div[contains(@class, 'title')]]/@href",
-    body: ".//div[contains(@class, 'generic-snippet')]//text()",
-  }).filter((result) => result.title && /^https?:\/\//.test(result.href));
+const BRAVE_CLOAK_PREFIX = "https://search.brave.com/go/v1#";
+const BRAVE_CLOAK_PAGE = "https://search.brave.com/go/v1/";
+const BRAVE_RESOLVE_TIMEOUT_MS = 8_000;
+const BRAVE_RESOLVE_CONCURRENCY = 4;
+const BRAVE_RESOLVE_SLACK = 3;
+
+interface BraveHit {
+  title: string;
+  body: string;
+  href: string;
+  citeHref: string;
+  token: string;
+}
+
+function firstText(values: string[]): string {
+  for (const value of values) {
+    const text = collapseWhitespace(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function braveToken(href: string): string {
+  const at = href.indexOf("/go/v1");
+  if (at === -1) return "";
+  return href.slice(at + "/go/v1".length).replace(/^[/#]+/, "");
+}
+
+function braveCiteOrigin(item: DomNode): string {
+  const cite = xpathText(".//cite[contains(@class,'snippet-url')]//text()", item).join("");
+  try {
+    return new URL(collapseWhitespace(cite.split("›")[0] ?? "")).origin;
+  } catch {
+    return "";
+  }
+}
+
+function parseBraveHits(html: string): BraveHit[] {
+  const root = buildDom(html);
+  let items = xpathNodes("//div[contains(@class, 'snippet') and @data-type='web']", root);
+  if (!items.length) items = xpathNodes("//div[contains(@class, 'result-wrapper')]", root);
+  const hits: BraveHit[] = [];
+  for (const item of items) {
+    const title =
+      firstText(xpathText(".//div[contains(@class, 'title')]/@title", item)) ||
+      normalizeText(xpathText(".//div[contains(@class, 'title')]//text()", item).join(""));
+    const body = normalizeText(
+      xpathText(".//div[contains(@class, 'generic-snippet')]//text()", item).join(""),
+    );
+    const anchors = xpathText(".//a/@href", item).map((href) => collapseWhitespace(href));
+    const token = anchors.map(braveToken).find(Boolean) ?? "";
+    const absolute =
+      anchors.map((href) => normalizeUrl(href)).find((href) => /^https?:\/\//.test(href)) ?? "";
+    const citeHref = braveCiteOrigin(item);
+    if (!title && !body) continue;
+    const href = token ? `${BRAVE_CLOAK_PREFIX}${token}` : absolute;
+    if (!href) continue;
+    hits.push({ title, body, href, citeHref, token });
+  }
+  return hits;
+}
+
+function braveFallback(hit: BraveHit): string {
+  return hit.token ? hit.citeHref || hit.href : hit.href;
+}
+
+async function resolveBraveHit(
+  hit: BraveHit,
+  ctx: EngineContext,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  const budget = Math.min(timeoutMs, BRAVE_RESOLVE_TIMEOUT_MS);
+  if (!hit.token || budget <= 0 || signal?.aborted) return braveFallback(hit);
+  const page = await renderPageHtml(`${BRAVE_CLOAK_PAGE}${hit.token}`, ctx, budget, signal);
+  if (typeof page !== "string") return braveFallback(hit);
+  const target = xpathText("//a[contains(@class, 'destination')]/@href", buildDom(page))
+    .map((href) => normalizeUrl(collapseWhitespace(href)))
+    .find((href) => /^https?:\/\//.test(href));
+  return target ?? braveFallback(hit);
+}
+
+async function resolveBraveHits(
+  hits: BraveHit[],
+  ctx: EngineContext,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<SearchResult[]> {
+  const hrefs = hits.map((hit) => braveFallback(hit));
+  const limit = Math.min(hits.length, (ctx.maxResults ?? 5) + BRAVE_RESOLVE_SLACK);
+  let next = 0;
+  const worker = async () => {
+    while (next < limit) {
+      const index = next++;
+      if (!hits[index].token) continue;
+      hrefs[index] = await resolveBraveHit(hits[index], ctx, timeoutMs, signal);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(BRAVE_RESOLVE_CONCURRENCY, limit) }, worker),
+  );
+  return hits.map((hit, index) => ({ title: hit.title, href: hrefs[index], body: hit.body }));
+}
+
+export function parseBraveResults(html: string): SearchResult[] {
+  return parseBraveHits(html).map(({ title, href, body }) => ({ title, href, body }));
 }
 
 function parseYahooResults(html: string): SearchResult[] {
@@ -615,14 +724,15 @@ const BING: Engine = {
 const BRAVE: Engine = {
   name: "brave",
   provider: "brave",
-  render(query, ctx, timeoutMs, signal) {
-    return renderEnginePage(
+  async render(query, ctx, timeoutMs, signal) {
+    const html = await renderPageHtml(
       searchUrl("https://search.brave.com/search", { q: query }),
       ctx,
       timeoutMs,
       signal,
-      parseBraveResults,
     );
+    if (typeof html !== "string") return html;
+    return resolveBraveHits(parseBraveHits(html), ctx, timeoutMs, signal);
   },
 };
 
@@ -656,7 +766,7 @@ const ECOSIA: Engine = {
 
 export const TEXT_ENGINES: Engine[] = [BING, BRAVE, YAHOO, ECOSIA];
 
-export const DEFAULT_ENGINE_NAMES = ["brave", "ecosia"] as const;
+export const DEFAULT_ENGINE_NAMES = ["brave", "bing"] as const;
 
 export class ResultsAggregator {
   private cache = new Map<string, SearchResult>();
@@ -774,6 +884,7 @@ async function runTextSearch(
     policy: options.policy ?? null,
     renderPage: options.renderPage,
     allowPrivateAddresses: options.allowPrivateAddresses,
+    maxResults,
   };
   const controller = new AbortController();
   let onAbort: (() => void) | undefined;

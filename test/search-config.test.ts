@@ -147,9 +147,9 @@ describe("search config command", () => {
       rendered = component.render(80).join("\n");
     };
     await openSearchConfig({ mode: "tui", cwd: root, ui: { custom, notify: () => {} } } as never);
-    expect(rendered).toMatch(/Bing\s+off/);
+    expect(rendered).toMatch(/Bing\s+on/);
     expect(rendered).toMatch(/Brave\s+on/);
     expect(rendered).toMatch(/Yahoo\s+off/);
-    expect(rendered).toMatch(/Ecosia\s+on/);
+    expect(rendered).toMatch(/Ecosia\s+off/);
   });
 });

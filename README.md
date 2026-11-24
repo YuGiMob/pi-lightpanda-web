@@ -71,7 +71,7 @@ Both tools show their target in the pi TUI: `web_search "query"` and `web_fetch 
 `web_search` renders each engine's result page with Lightpanda, parses the dump, and fuses the
 results with weighted reciprocal-rank fusion (k=60):
 
-- Default engines: **Brave** and **Ecosia**.
+- Default engines: **Brave** and **Bing**.
 - Results are deduplicated by canonicalized href (`utm_*` and tracking parameters stripped,
   fragments dropped, default ports removed), then capped per registrable domain
   (`webSearch.maxPerHost`, off by default).
@@ -90,9 +90,10 @@ some engines cannot be used:
 | Engine | Status | Backend |
 |---|---|---|
 | Brave | Default | Brave's own independent index |
-| Ecosia | Default | Google-provided results (each result is labelled `provider="GOOGLE"`); may answer with a 403 bot challenge |
+| Brave | Default | Brave's own independent index; result links are cloaked behind `/go/v1` and resolved through the interstitial page |
+| Bing | Default | Bing's index; returns absolute result links and stays available through Lightpanda |
+| Ecosia | Opt-in | Google-provided results (each result is labelled `provider="GOOGLE"`); answers with a 403 Cloudflare bot challenge from some networks |
 | Yahoo | Opt-in | Bing's index with Yahoo's ranking; in our runs it was much better than Bing for developer queries |
-| Bing | Opt-in | Bing's index; in our runs it returned generic entity pages for developer queries (for example `python.org` instead of the 3.14 release notes, `linux.org` instead of `io_uring` documentation) |
 | DuckDuckGo | Unavailable | Anomaly / bot challenge |
 | Startpage | Unavailable | Anubis proof-of-work challenge |
 | Google | Unavailable | Consent interstitial |
@@ -108,10 +109,11 @@ The same set exposes Bing's specificity problem. **topic@5** (top-5 results whos
 a query-specific term such as `3.14`, `hnsw`, or `io_uring`) is Brave **0.97**, Yahoo **0.97**, Ecosia
 **0.72**, and Bing **0.25**. Bing's domain-level precision (0.42) looks close to the others only because
 broad entity pages such as `python.org` still land on an expected domain; it is not answering the query.
-Ecosia answered 6 of 8 queries; the other two came back as `403 BotChallenge`, and the sweep falls back
-to Brave for those. That is why the defaults are Brave + Ecosia, with Bing and Yahoo opt-in.
+Ecosia answers intermittently: the rest of the time Cloudflare returns `403 BotChallenge`, which Lightpanda
+reports as `the page served a bot challenge instead of content`. Because of that, the defaults are Brave +
+Bing; Ecosia and Yahoo stay one `/search-config` toggle away.
 
-Use `/search-config` to enable or disable engines; Bing and Yahoo are available as opt-ins. At least one engine must stay on.
+Use `/search-config` to enable or disable engines; Ecosia and Yahoo are available as opt-ins. At least one engine must stay on.
 
 ### web_fetch
 
@@ -176,8 +178,8 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
   },
   "webSearch": {
     "timeoutMs": 300000,
-    "engines": ["brave", "ecosia"],
-    "engineWeights": { "brave": 1, "ecosia": 1 },
+    "engines": ["brave", "bing"],
+    "engineWeights": { "brave": 1, "bing": 1 },
     "maxPerHost": 0
   },
   "webRender": {
@@ -195,7 +197,7 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 | `piLightpanda.allowPrivateAddresses` / `webFetch.allowPrivateAddresses` | `true` | Set `false` to pass `--block-private-networks` and refuse localhost/LAN targets |
 | `piLightpanda.allowLocalFiles` / `webFetch.allowLocalFiles` | `true` | Set `false` to refuse `file://`, absolute, `~/`, and `./` paths |
 | `piLightpanda.allowRemotePdf` / `webFetch.allowRemotePdf` | `true` | Set `false` to disable the direct PDF downloader and keep Lightpanda as the only network transport |
-| `webSearch.engines` / `piLightpanda.engines` | `["brave","ecosia"]` | Enabled engines; unknown names are ignored, an empty match falls back to defaults |
+| `webSearch.engines` / `piLightpanda.engines` | `["brave","bing"]` | Enabled engines; unknown names are ignored, an empty match falls back to defaults |
 | `webSearch.engineWeights` / `piLightpanda.engineWeights` | all `1` | Positive per-engine RRF weight |
 | `webSearch.maxPerHost` / `piLightpanda.maxPerHost` | `0` (no cap) | Most results one registrable domain may contribute |
 | `webRender.lightpandaEnabled` / `piLightpanda.lightpandaEnabled` | `true` | Disable the local renderer entirely |

@@ -95,6 +95,7 @@ interface LightpandaJson {
   headers?: { name?: string; value?: string }[];
   content?: string;
   error?: string | null;
+  bot_challenge?: string | null;
 }
 
 type DumpOutcome =
@@ -225,6 +226,20 @@ function failureFor(result: RunResult): string | null {
   if (result.cancelled) return CANCELLED_MESSAGE;
   if (result.timedOut) return TIMED_OUT_MESSAGE;
   return null;
+}
+
+function failedDumpMessage(stdout: string): string | null {
+  let data: LightpandaJson;
+  try {
+    data = JSON.parse(stdout) as LightpandaJson;
+  } catch {
+    return null;
+  }
+  if (data.bot_challenge || /bot.?challenge/i.test(String(data.error ?? ""))) {
+    return CHALLENGE_MESSAGE;
+  }
+  const status = Number(data.http_status ?? 0);
+  return status >= 400 ? httpError(status) : null;
 }
 
 function httpError(status: number): string {
@@ -431,6 +446,8 @@ async function fetchDump(
   const failure = failureFor(result);
   if (failure) return { ok: false, message: failure };
   if (result.code !== 0) {
+    const known = failedDumpMessage(result.stdout);
+    if (known) return { ok: false, message: known };
     const detail = result.stderr.trim().split("\n").at(-1) ?? "";
     return {
       ok: false,
