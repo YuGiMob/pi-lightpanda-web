@@ -687,10 +687,6 @@ async function resolveBraveHits(
   return hits.map((hit, index) => ({ title: hit.title, href: hrefs[index], body: hit.body }));
 }
 
-export function parseBraveResults(html: string): SearchResult[] {
-  return parseBraveHits(html).map(({ title, href, body }) => ({ title, href, body }));
-}
-
 function parseYahooResults(html: string): SearchResult[] {
   return extractResults(html, "//li[.//h3[@class='title']]", {
     title: ".//h3//text()",
