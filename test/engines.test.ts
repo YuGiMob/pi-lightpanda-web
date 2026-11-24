@@ -20,13 +20,23 @@ import {
   type SearchRenderPage,
 } from "../engines.ts";
 
-const BING_TARGET = "https://example.com/bing";
-const BING_ENCODED = Buffer.from(BING_TARGET, "utf8").toString("base64url");
-const BING_HTML = `
-  <li class="b_algo">
-    <h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=x&amp;u=a1${BING_ENCODED}&amp;ntb=1">Bing result</a></h2>
-    <p>Bing snippet.</p>
-  </li>
+const YEP_HTML = `
+  <ol class="results">
+    <li>
+      <article class="result">
+        <h2 class="title"><a href="https://oneuptime.com/blog/post/x">How to Create HNSW Index</a></h2>
+        <div class="url">oneuptime.com › blog</div>
+        <p class="snippet">Learn to create <strong>HNSW</strong> indexes.</p>
+      </article>
+    </li>
+    <li>
+      <article class="result">
+        <h2 class="title"><a href="https://example.com/yep">Yep result</a></h2>
+        <div class="url">example.com › yep</div>
+        <p class="snippet">Yep snippet.</p>
+      </article>
+    </li>
+  </ol>
 `;
 
 const BRAVE_HTML = `
@@ -92,7 +102,7 @@ const ECOSIA_HTML = `
 `;
 
 function fixtureFor(url: string): string {
-  if (url.includes("bing.com")) return BING_HTML;
+  if (url.includes("yep.com")) return YEP_HTML;
   if (url.includes("brave.com")) return BRAVE_HTML;
   if (url.includes("yahoo.com")) return YAHOO_HTML;
   if (url.includes("ecosia.org")) return ECOSIA_HTML;
@@ -190,26 +200,31 @@ describe("extractResults", () => {
 });
 
 describe("engine renderers", () => {
-  it("parses bing results and decodes redirect links", async () => {
+  it("parses yep results with direct links and nested snippet text", async () => {
     const requested: string[] = [];
-    const results = await engine("bing").render(
-      "unsloth studio",
+    const results = await engine("yep").render(
+      "hnsw index",
       {
         region: "us-en",
         safesearch: "moderate",
         renderPage: async (url) => {
           requested.push(url);
-          return BING_HTML;
+          return YEP_HTML;
         },
       },
       5000,
     );
     expect(results).toEqual([
-      { title: "Bing result", href: BING_TARGET, body: "Bing snippet." },
+      {
+        title: "How to Create HNSW Index",
+        href: "https://oneuptime.com/blog/post/x",
+        body: "Learn to create HNSW indexes.",
+      },
+      { title: "Yep result", href: "https://example.com/yep", body: "Yep snippet." },
     ]);
     const url = new URL(requested[0]);
-    expect(url.origin + url.pathname).toBe("https://www.bing.com/search");
-    expect(url.searchParams.get("q")).toBe("unsloth studio");
+    expect(url.origin + url.pathname).toBe("https://yep.com/web");
+    expect(url.searchParams.get("q")).toBe("hnsw index");
   });
 
   it("parses brave results from the legacy layout", async () => {
@@ -320,12 +335,12 @@ describe("engine renderers", () => {
   });
 
   it("returns null when no renderer is configured", async () => {
-    expect(await engine("bing").render("x", { region: "us-en", safesearch: "moderate" }, 5000)).toBeNull();
+    expect(await engine("yep").render("x", { region: "us-en", safesearch: "moderate" }, 5000)).toBeNull();
   });
 
   it("passes the website policy and private-address flag to the renderer", async () => {
     let seen: unknown;
-    await engine("bing").render(
+    await engine("yep").render(
       "x",
       {
         region: "us-en",
@@ -334,7 +349,7 @@ describe("engine renderers", () => {
         allowPrivateAddresses: false,
         renderPage: async (_url, options) => {
           seen = options;
-          return BING_HTML;
+          return YEP_HTML;
         },
       },
       5000,
@@ -441,8 +456,8 @@ describe("registrableDomain", () => {
 
 describe("sweep", () => {
   it("ships the expected default engines", () => {
-    expect([...DEFAULT_ENGINE_NAMES]).toEqual(["brave", "bing"]);
-    expect(TEXT_ENGINES.map((candidate) => candidate.name)).toEqual(["bing", "brave", "yahoo", "ecosia"]);
+    expect([...DEFAULT_ENGINE_NAMES]).toEqual(["brave", "yep"]);
+    expect(TEXT_ENGINES.map((candidate) => candidate.name)).toEqual(["yep", "brave", "yahoo", "ecosia"]);
   });
 
   it("renders the selected engines and fuses their results", async () => {
@@ -454,8 +469,9 @@ describe("sweep", () => {
       }),
     });
     expect(results.map((result) => result.href).sort()).toEqual([
-      "https://example.com/bing",
       "https://example.com/brave",
+      "https://example.com/yep",
+      "https://oneuptime.com/blog/post/x",
     ]);
     expect(requested.length).toBe(2);
   });
@@ -463,15 +479,15 @@ describe("sweep", () => {
   it("limits the sweep to the configured engines", async () => {
     const requested: string[] = [];
     const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: async (url) => {
         requested.push(url);
-        return BING_HTML;
+        return YEP_HTML;
       },
     });
-    expect(results.length).toBe(1);
+    expect(results.length).toBe(2);
     expect(requested.length).toBe(1);
-    expect(requested[0]).toContain("bing.com");
+    expect(requested[0]).toContain("yep.com");
   });
 
   it("falls back to the default engines when no configured name matches", async () => {
@@ -489,10 +505,10 @@ describe("sweep", () => {
   it("applies maxPerHost to the returned results", async () => {
     const sameHost = Array.from(
       { length: 5 },
-      (_, i) => `<li class="b_algo"><h2><a href="https://one.example/p${i}">R${i}</a></h2><p>S${i}</p></li>`,
+      (_, i) => `<article class="result"><h2 class="title"><a href="https://one.example/p${i}">R${i}</a></h2><p class="snippet">S${i}</p></article>`,
     ).join("");
     const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing"],
+      engines: ["yep"],
       maxPerHost: 2,
       renderPage: async () => sameHost,
     });
@@ -502,37 +518,37 @@ describe("sweep", () => {
 
   it("orders results by engine weight", async () => {
     const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing", "yahoo"],
-      engineWeights: { bing: 0.5, yahoo: 3 },
-      renderPage: async (url) => (url.includes("yahoo") ? YAHOO_HTML : BING_HTML),
+      engines: ["yep", "yahoo"],
+      engineWeights: { yep: 0.5, yahoo: 3 },
+      renderPage: async (url) => (url.includes("yahoo") ? YAHOO_HTML : YEP_HTML),
     });
     expect(results[0].href).toBe("https://example.com/yahoo");
   });
 
-  it("aborts in-flight engines once enough results arrive", async () => {
+  it("lets every engine finish after enough results arrive", async () => {
     let aborted = false;
-    const results = await autoTextSearch("cat", 1, 10_000, undefined, {
-      engines: ["bing", "yahoo"],
+    const results = await autoTextSearch("cat", 2, 10_000, undefined, {
+      engines: ["yep", "yahoo"],
       renderPage: (url, options) => {
         if (url.includes("yahoo")) {
-          return new Promise((_resolve, reject) => {
+          return new Promise<string>((resolve) => {
             options.signal?.addEventListener("abort", () => {
               aborted = true;
-              reject(new DOMException("aborted", "AbortError"));
             });
+            setTimeout(() => resolve(YAHOO_HTML), 20);
           });
         }
-        return Promise.resolve(BING_HTML);
+        return Promise.resolve(YEP_HTML);
       },
     });
-    expect(results.length).toBe(1);
-    expect(aborted).toBe(true);
+    expect(aborted).toBe(false);
+    expect(results.map((result) => result.href)).toContain("https://example.com/yahoo");
   });
 
   it("reports a timeout when every engine stalls", async () => {
     await expect(
       autoTextSearch("cat", 5, 80, undefined, {
-        engines: ["bing", "yahoo"],
+        engines: ["yep", "yahoo"],
         renderPage: (_url, options) =>
           new Promise((_resolve, reject) => {
             options.signal?.addEventListener("abort", () => {
@@ -545,7 +561,7 @@ describe("sweep", () => {
 
   it("reports a timeout when an aborted render returns a cancellation error", async () => {
     const error: unknown = await autoTextSearch("cat", 5, 80, undefined, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: (_url, options) =>
         new Promise<{ error: string }>((resolve) => {
           options.signal?.addEventListener(
@@ -557,14 +573,14 @@ describe("sweep", () => {
     }).catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(SearchTimeoutError);
     expect(error).not.toBeInstanceOf(SearchRenderError);
-    expect((error as SearchTimeoutError).providers).toEqual(["bing"]);
+    expect((error as SearchTimeoutError).providers).toEqual(["yep"]);
   });
 
   it("reports cancellation when the caller aborts an in-flight render", async () => {
     const controller = new AbortController();
     let started = false;
     const pending = autoTextSearch("cat", 5, 10_000, controller.signal, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: (_url, options) =>
         new Promise<{ error: string }>((resolve) => {
           started = true;
@@ -585,7 +601,7 @@ describe("sweep", () => {
   it("reports no results when every engine returns nothing", async () => {
     await expect(
       autoTextSearch("cat", 5, 10_000, undefined, {
-        engines: ["bing", "yahoo"],
+        engines: ["yep", "yahoo"],
         renderPage: async () => null,
       }),
     ).rejects.toThrow(EmptySweepError);
@@ -596,8 +612,8 @@ describe("sweep", () => {
     controller.abort();
     await expect(
       autoTextSearch("cat", 5, 10_000, controller.signal, {
-        engines: ["bing"],
-        renderPage: async () => BING_HTML,
+        engines: ["yep"],
+        renderPage: async () => YEP_HTML,
       }),
     ).rejects.toThrow(SearchCancelled);
   });
@@ -606,11 +622,11 @@ describe("sweep", () => {
     const log: string[] = [];
     const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
     const renderFirst: SearchRenderPage = async (url) => {
-      const name = url.includes("bing") ? "bing" : "yahoo";
+      const name = url.includes("yep") ? "yep" : "yahoo";
       log.push(`start:${name}`);
       await delay(10);
       log.push(`end:${name}`);
-      return name === "bing" ? BING_HTML : YAHOO_HTML;
+      return name === "yep" ? YEP_HTML : YAHOO_HTML;
     };
     const renderSecond: SearchRenderPage = async (url) => {
       const name = url.includes("brave") ? "brave" : "ecosia";
@@ -620,18 +636,19 @@ describe("sweep", () => {
       return name === "brave" ? BRAVE_HTML : ECOSIA_HTML;
     };
     const [first, second] = await Promise.all([
-      autoTextSearch("cat", 5, 10_000, undefined, { engines: ["bing", "yahoo"], renderPage: renderFirst }),
+      autoTextSearch("cat", 5, 10_000, undefined, { engines: ["yep", "yahoo"], renderPage: renderFirst }),
       autoTextSearch("cat", 5, 10_000, undefined, { engines: ["brave", "ecosia"], renderPage: renderSecond }),
     ]);
     expect(first.map((result) => result.href)).toEqual([
-      "https://example.com/bing",
       "https://example.com/yahoo",
+      "https://oneuptime.com/blog/post/x",
+      "https://example.com/yep",
     ]);
     expect(second.map((result) => result.href)).toEqual([
       "https://example.com/brave",
       "https://example.com/ecosia",
     ]);
-    const firstEvents = log.filter((entry) => entry.endsWith(":bing") || entry.endsWith(":yahoo"));
+    const firstEvents = log.filter((entry) => entry.endsWith(":yep") || entry.endsWith(":yahoo"));
     const secondEvents = log.filter((entry) => entry.endsWith(":brave") || entry.endsWith(":ecosia"));
     expect(firstEvents).toHaveLength(4);
     expect(secondEvents).toHaveLength(4);
@@ -646,11 +663,11 @@ describe("sweep", () => {
     });
     const rendered: string[] = [];
     const first = autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: async () => {
-        rendered.push("bing");
+        rendered.push("yep");
         await gate;
-        return BING_HTML;
+        return YEP_HTML;
       },
     });
     const controller = new AbortController();
@@ -671,17 +688,17 @@ describe("sweep", () => {
     const cancelled = expect(second).rejects.toThrow(SearchCancelled);
     controller.abort();
     await cancelled;
-    expect(rendered).toEqual(["bing"]);
+    expect(rendered).toEqual(["yep"]);
     releaseFirst();
-    expect((await first).length).toBe(1);
+    expect((await first).length).toBe(2);
     expect((await third).length).toBe(1);
-    expect(rendered).toEqual(["bing", "ecosia"]);
+    expect(rendered).toEqual(["yep", "ecosia"]);
   });
 
   it("records render errors without retrying", async () => {
     const requested: string[] = [];
     const error: unknown = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: async (url) => {
         requested.push(url);
         return { error: "Failed to fetch URL: HTTP 429 Too Many Requests." };
@@ -689,19 +706,19 @@ describe("sweep", () => {
     }).catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(SearchRenderError);
     expect((error as SearchRenderError).failures).toEqual({
-      bing: "Failed to fetch URL: HTTP 429 Too Many Requests.",
+      yep: "Failed to fetch URL: HTTP 429 Too Many Requests.",
     });
     expect(requested.length).toBe(1);
   });
 
   it("keeps results when another engine reports a render error", async () => {
     const results = await autoTextSearch("cat", 5, 10_000, undefined, {
-      engines: ["bing", "yahoo"],
+      engines: ["yep", "yahoo"],
       renderPage: async (url) => {
         if (url.includes("yahoo")) return { error: "Failed to render URL: timed out." };
-        return BING_HTML;
+        return YEP_HTML;
       },
     });
-    expect(results.map((result) => result.href)).toEqual(["https://example.com/bing"]);
+    expect(results.map((result) => result.href)).toEqual(["https://oneuptime.com/blog/post/x", "https://example.com/yep"]);
   });
 });

@@ -78,16 +78,16 @@ describe("search settings", () => {
       join(cwd, ".pi", "settings.json"),
       JSON.stringify({
         webSearch: {
-          engines: ["bing", "yahoo"],
+          engines: ["yep", "yahoo"],
           maxResults: 9,
-          engineWeights: { bing: 2, yahoo: 0.5, bad: -1 },
+          engineWeights: { yep: 2, yahoo: 0.5, bad: -1 },
           maxPerHost: 3,
         },
       }),
     );
     expect(await loadDefaultMaxResults(cwd)).toBe(9);
-    expect(await loadDefaultEngines(cwd)).toEqual(["bing", "yahoo"]);
-    expect(await loadDefaultEngineWeights(cwd)).toEqual({ bing: 2, yahoo: 0.5 });
+    expect(await loadDefaultEngines(cwd)).toEqual(["yep", "yahoo"]);
+    expect(await loadDefaultEngineWeights(cwd)).toEqual({ yep: 2, yahoo: 0.5 });
     expect(await loadDefaultMaxPerHost(cwd)).toBe(3);
   });
 

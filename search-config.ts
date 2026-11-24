@@ -8,14 +8,14 @@ import { DEFAULT_ENGINE_NAMES, TEXT_ENGINES } from "./engines.ts";
 import { loadSearchSettings } from "./settings.ts";
 
 const ENGINE_LABELS: Record<string, string> = {
-  bing: "Bing",
+  yep: "Yep",
   brave: "Brave",
   yahoo: "Yahoo",
   ecosia: "Ecosia",
 };
 
 const ENGINE_HINTS: Record<string, string> = {
-  bing: "On by default. Bing's result page, rendered locally with Lightpanda.",
+  yep: "On by default. Yep's own index (Ahrefs), rendered locally with Lightpanda; it may serve a bot challenge from some networks.",
   brave: "On by default. Brave's independent index, rendered locally with Lightpanda; Brave may serve a challenge page from some networks.",
   yahoo: "Opt-in. Yahoo's result page, rendered locally with Lightpanda.",
   ecosia: "Opt-in. Ecosia's result page, rendered locally with Lightpanda; Cloudflare challenges it from some networks.",

@@ -558,31 +558,6 @@ function isRenderFailure(value: SearchResult[] | { error: string } | null): valu
   return value !== null && !Array.isArray(value);
 }
 
-function decodeBingHref(href: string): string {
-  try {
-    const parsed = new URL(href);
-    if (!/(^|\.)bing\.com$/.test(parsed.hostname)) return href;
-    const raw = parsed.searchParams.get("u");
-    if (!raw || !raw.startsWith("a1")) return href;
-    const base64 = raw.slice(2).replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-    const decoded = Buffer.from(padded, "base64").toString("utf8");
-    return /^https?:\/\//.test(decoded) ? decoded : href;
-  } catch {
-    return href;
-  }
-}
-
-function parseBingResults(html: string): SearchResult[] {
-  return extractResults(html, "//li[contains(@class, 'b_algo')]", {
-    title: ".//h2//text()",
-    href: ".//h2//a/@href",
-    body: ".//p//text()",
-  })
-    .map((result) => ({ ...result, href: decodeBingHref(result.href) }))
-    .filter((result) => result.title && /^https?:\/\//.test(result.href));
-}
-
 const BRAVE_CLOAK_PREFIX = "https://search.brave.com/go/v1#";
 const BRAVE_CLOAK_PAGE = "https://search.brave.com/go/v1/";
 const BRAVE_RESOLVE_TIMEOUT_MS = 8_000;
@@ -703,16 +678,24 @@ function parseEcosiaResults(html: string): SearchResult[] {
   }).filter((result) => result.title && /^https?:\/\//.test(result.href));
 }
 
-const BING: Engine = {
-  name: "bing",
-  provider: "bing",
+function parseYepResults(html: string): SearchResult[] {
+  return extractResults(html, "//article[contains(@class, 'result')]", {
+    title: ".//h2[contains(@class, 'title')]//text()",
+    href: ".//h2[contains(@class, 'title')]//a/@href",
+    body: ".//p[contains(@class, 'snippet')]//text()",
+  }).filter((result) => result.title && /^https?:\/\//.test(result.href));
+}
+
+const YEP: Engine = {
+  name: "yep",
+  provider: "yep",
   render(query, ctx, timeoutMs, signal) {
     return renderEnginePage(
-      searchUrl("https://www.bing.com/search", { q: query }),
+      searchUrl("https://yep.com/web", { q: query }),
       ctx,
       timeoutMs,
       signal,
-      parseBingResults,
+      parseYepResults,
     );
   },
 };
@@ -760,9 +743,9 @@ const ECOSIA: Engine = {
   },
 };
 
-export const TEXT_ENGINES: Engine[] = [BING, BRAVE, YAHOO, ECOSIA];
+export const TEXT_ENGINES: Engine[] = [YEP, BRAVE, YAHOO, ECOSIA];
 
-export const DEFAULT_ENGINE_NAMES = ["brave", "bing"] as const;
+export const DEFAULT_ENGINE_NAMES = ["brave", "yep"] as const;
 
 export class ResultsAggregator {
   private cache = new Map<string, SearchResult>();
@@ -873,7 +856,6 @@ async function runTextSearch(
   const aggregator = new ResultsAggregator();
   const engineWeights = options.engineWeights ?? {};
   const maxPerHost = options.maxPerHost ?? DEFAULT_MAX_PER_HOST;
-  const enough = () => capByHost(aggregator.ranked(), maxResults, maxPerHost).length >= maxResults;
   const ctx: EngineContext = {
     region: "us-en",
     safesearch: "moderate",
@@ -966,19 +948,12 @@ async function runTextSearch(
     if (results === null && Date.now() >= deadline) timedOutProviders.add(engine.name);
     if (results && results.length) {
       aggregator.extend(results, engineWeights[engine.name] ?? 1);
-      if (enough()) controller.abort();
     }
   };
   while (i < engines.length || pending.size > 0) {
-    if (enough() || cancelled) {
-      controller.abort();
-      break;
-    }
+    if (cancelled) break;
     while (i < engines.length && pending.size < maxWorkers) {
-      if (enough() || cancelled) {
-        controller.abort();
-        break;
-      }
+      if (cancelled) break;
       const engine = engines[i++];
       const task = run(engine);
       pending.add(task);

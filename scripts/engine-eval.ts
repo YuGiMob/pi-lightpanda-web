@@ -49,7 +49,7 @@ const TIMEOUT_MS = numberFlag("--timeout", 60_000);
 const MAX_RESULTS = numberFlag("--max", 5);
 const CACHE_PATH = stringFlag("--cache");
 const DETAILS = args.includes("--details");
-const engineNames = (stringFlag("--engines") || "bing,brave,yahoo,ecosia")
+const engineNames = (stringFlag("--engines") || "yep,brave,yahoo,ecosia")
   .split(",")
   .map((name) => name.trim().toLowerCase())
   .filter((name) => TEXT_ENGINES.some((engine) => engine.name === name));
@@ -225,11 +225,11 @@ for (const engine of engineNames) {
 }
 
 const SUBSETS: { name: string; engines: string[] }[] = [
-  { name: "all four", engines: ["bing", "brave", "yahoo", "ecosia"] },
-  { name: "bing+brave+ecosia", engines: ["bing", "brave", "ecosia"] },
+  { name: "all four", engines: ["yep", "brave", "yahoo", "ecosia"] },
+  { name: "yep+brave+ecosia", engines: ["yep", "brave", "ecosia"] },
   { name: "brave+yahoo+ecosia", engines: ["brave", "yahoo", "ecosia"] },
   { name: "brave+ecosia", engines: ["brave", "ecosia"] },
-  { name: "bing+yahoo+ecosia", engines: ["bing", "yahoo", "ecosia"] },
+  { name: "yep+yahoo+ecosia", engines: ["yep", "yahoo", "ecosia"] },
 ].filter((subset) => subset.engines.every((name) => engineNames.includes(name)));
 
 console.log(`\n=== fusion simulation (top ${MAX_RESULTS}) ===`);

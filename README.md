@@ -71,12 +71,11 @@ Both tools show their target in the pi TUI: `web_search "query"` and `web_fetch 
 `web_search` renders each engine's result page with Lightpanda, parses the dump, and fuses the
 results with weighted reciprocal-rank fusion (k=60):
 
-- Default engines: **Brave** and **Bing**.
+- Default engines: **Brave** and **Yep**.
 - Results are deduplicated by canonicalized href (`utm_*` and tracking parameters stripped,
   fragments dropped, default ports removed), then capped per registrable domain
   (`webSearch.maxPerHost`, off by default).
-- A transient empty render is retried once inside the sweep budget. Engines still in flight are
-  aborted once enough results have arrived.
+- A transient empty render is retried once inside the sweep budget.
 - Sweeps are serialized inside one process: overlapping `web_search` calls queue and run one at a
   time, so the engines never see concurrent bursts from the same host.
 - `websitePolicy` is enforced before rendering and again on every result URL; when a policy
@@ -90,28 +89,25 @@ some engines cannot be used:
 | Engine | Status | Backend |
 |---|---|---|
 | Brave | Default | Brave's own independent index; result links are cloaked behind `/go/v1` and resolved through the interstitial page |
-| Bing | Default | Bing's index; returns absolute result links and stays available through Lightpanda |
+| Yep | Default | Yep's own independent index; returns absolute deep links, answers in about 1 second, and occasionally serves a bot challenge that a retry clears |
 | Ecosia | Opt-in | Google-provided results (each result is labelled `provider="GOOGLE"`); answers with a 403 Cloudflare bot challenge from some networks |
-| Yahoo | Opt-in | Bing's index with Yahoo's ranking; in our runs it was much better than Bing for developer queries |
+| Yahoo | Opt-in | Bing-backed index with Yahoo's ranking; ranks well on developer queries |
 | DuckDuckGo | Unavailable | Anomaly / bot challenge |
 | Startpage | Unavailable | Anubis proof-of-work challenge |
 | Google | Unavailable | Consent interstitial |
 | Mojeek | Unavailable | Captcha |
+| Qwant | Unavailable | Answers 403 Forbidden through Lightpanda |
 
 `npm run engine:eval` measures the engines against a hand-labelled developer query set. On that set:
-top-5 URL overlap (mean Jaccard) is **0.37 Brave/Ecosia**, **0.35 Brave/Yahoo**, **0.09 Bing/Ecosia**,
-and **0.17 Bing/Yahoo**. Brave and Ecosia are different indexes with moderate overlap; Bing's low
-overlap comes from returning generic pages, not from adding useful coverage. Yahoo is Bing-backed but
-ranked much better than Bing through Lightpanda, so it remains available as an opt-in fallback.
+top-5 URL overlap (mean Jaccard) is **0.37 Brave/Ecosia** and **0.35 Brave/Yahoo**. Brave and Ecosia are
+different indexes with moderate overlap. Yahoo is Bing-backed but ranks well for developer queries, so it
+remains available as an opt-in fallback.
 
-The same set exposes Bing's specificity problem. **topic@5** (top-5 results whose URL or title contains
-a query-specific term such as `3.14`, `hnsw`, or `io_uring`) is Brave **0.97**, Yahoo **0.97**, Ecosia
-**0.72**, and Bing **0.25**. Bing's domain-level precision (0.42) looks close to the others only because
-broad entity pages such as `python.org` still land on an expected domain; it is not answering the query.
 Ecosia answers intermittently: the rest of the time Cloudflare returns `403 BotChallenge`, which Lightpanda
-reports as `the page served a bot challenge instead of content`. That is why the defaults stay Brave and Bing:
-Bing is the only engine besides Brave that answers reliably through Lightpanda. Yahoo ranks better than Bing
-on this set but stays opt-in, and Ecosia stays opt-in because Cloudflare challenges it from some networks.
+reports as `the page served a bot challenge instead of content`. Bing was removed because through Lightpanda
+it served result pages belonging to unrelated queries, and that poisoned a sweep so thoroughly that it could
+preempt the other engine. The sweep now lets every engine finish, so results are fused rather than first-come.
+Yahoo and Ecosia remain opt-in.
 
 Use `/search-config` to enable or disable engines; Ecosia and Yahoo are available as opt-ins. At least one engine must stay on.
 
@@ -178,8 +174,8 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
   },
   "webSearch": {
     "timeoutMs": 300000,
-    "engines": ["brave", "bing"],
-    "engineWeights": { "brave": 1, "bing": 1 },
+    "engines": ["brave", "yep"],
+    "engineWeights": { "brave": 1, "yep": 1 },
     "maxPerHost": 0
   },
   "webRender": {
@@ -197,7 +193,7 @@ Settings live in `~/.pi/agent/settings.json` or `.pi/settings.json` (project ove
 | `piLightpanda.allowPrivateAddresses` / `webFetch.allowPrivateAddresses` | `true` | Set `false` to pass `--block-private-networks` and refuse localhost/LAN targets |
 | `piLightpanda.allowLocalFiles` / `webFetch.allowLocalFiles` | `true` | Set `false` to refuse `file://`, absolute, `~/`, and `./` paths |
 | `piLightpanda.allowRemotePdf` / `webFetch.allowRemotePdf` | `true` | Set `false` to disable the direct PDF downloader and keep Lightpanda as the only network transport |
-| `webSearch.engines` / `piLightpanda.engines` | `["brave","bing"]` | Enabled engines; unknown names are ignored, an empty match falls back to defaults |
+| `webSearch.engines` / `piLightpanda.engines` | `["brave","yep"]` | Enabled engines; unknown names are ignored, an empty match falls back to defaults |
 | `webSearch.engineWeights` / `piLightpanda.engineWeights` | all `1` | Positive per-engine RRF weight |
 | `webSearch.maxPerHost` / `piLightpanda.maxPerHost` | `0` (no cap) | Most results one registrable domain may contribute |
 | `webRender.lightpandaEnabled` / `piLightpanda.lightpandaEnabled` | `true` | Disable the local renderer entirely |

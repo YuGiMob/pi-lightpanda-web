@@ -170,16 +170,16 @@ describe("web_search outcomes", () => {
     await webSearch("q", {
       client,
       renderPage,
-      engines: ["bing"],
-      engineWeights: { bing: 2 },
+      engines: ["yep"],
+      engineWeights: { yep: 2 },
       maxPerHost: 3,
       allowPrivateAddresses: false,
     });
     expect(seen).toEqual([
       expect.objectContaining({
         renderPage,
-        engines: ["bing"],
-        engineWeights: { bing: 2 },
+        engines: ["yep"],
+        engineWeights: { yep: 2 },
         maxPerHost: 3,
         allowPrivateAddresses: false,
       }),
@@ -190,9 +190,9 @@ describe("web_search outcomes", () => {
 describe("searchSweep", () => {
   it("runs the local renderer through the engine sweep", async () => {
     const html =
-      '<li class="b_algo"><h2><a href="https://example.com/hit">Hit</a></h2><p>Snippet.</p></li>';
+      '<article class="result"><h2 class="title"><a href="https://example.com/hit">Hit</a></h2><p class="snippet">Snippet.</p></article>';
     const results = await searchSweep("cat", 1, undefined, 5000, {
-      engines: ["bing"],
+      engines: ["yep"],
       renderPage: async () => html,
     });
     expect(results).toEqual([{ title: "Hit", href: "https://example.com/hit", body: "Snippet." }]);
