@@ -1,6 +1,6 @@
 {
   "name": "pi-lightpanda-web",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Pi Lightpanda Web: web_search and web_fetch powered entirely by the local Lightpanda browser",
   "main": "index.ts",
