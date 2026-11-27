@@ -257,8 +257,16 @@ function looksLikeInterstitial(text: string): boolean {
   return INTERSTITIAL_MARKERS.some((marker) => lowered.includes(marker));
 }
 
+export function sameAddress(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return left === right;
+  }
+}
+
 function withUrlWhenRedirected(prefixed: string, requestedUrl: string, finalUrl: string): string {
-  if (finalUrl === requestedUrl) return prefixed;
+  if (sameAddress(requestedUrl, finalUrl)) return prefixed;
   const header = `URL: ${finalUrl}`;
   const startsWithMetadata = METADATA_LINE_RE.test(prefixed.split("\n")[0] ?? "");
   return startsWithMetadata ? `${header}\n${prefixed}` : `${header}\n\n${prefixed}`;

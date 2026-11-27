@@ -9,6 +9,7 @@ import {
   renderPageHtml,
   renderPageHtmlOutcome,
   renderPageWithLightpanda,
+  sameAddress,
 } from "../lightpanda.ts";
 import { makeSpawn, spawnFailing, spawnRendering } from "./helpers.ts";
 
@@ -246,6 +247,36 @@ describe("renderPageWithLightpanda", () => {
     expect(out).not.toContain("URL:");
   });
 
+  it("adds no url line when the render only adds a trailing slash", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE, { url: "https://example.com/" });
+    const out = await renderPageWithLightpanda("https://example.com", {
+      spawn: spawnImpl,
+      timeoutMs: 5000,
+    });
+    expect(out?.startsWith("Title: Local\n")).toBe(true);
+    expect(out).not.toContain("URL:");
+  });
+
+  it("shows the final url when a redirect adds a path slash", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE, { url: "https://example.com/page/" });
+    const out = await renderPageWithLightpanda("https://example.com/page", {
+      spawn: spawnImpl,
+      timeoutMs: 5000,
+    });
+    expect(out?.startsWith("URL: https://example.com/page/\nTitle: Local\n")).toBe(true);
+    expect(out?.match(/^URL: /gm)?.length).toBe(1);
+  });
+
+  it("adds no url line when only a default port differs", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE, { url: "https://example.com/" });
+    const out = await renderPageWithLightpanda("https://example.com:443/", {
+      spawn: spawnImpl,
+      timeoutMs: 5000,
+    });
+    expect(out?.startsWith("Title: Local\n")).toBe(true);
+    expect(out).not.toContain("URL:");
+  });
+
   it("returns markdown dumps directly", async () => {
     const { spawnImpl } = spawnRendering("# Doc\n\nBody text.", { headers: { "content-type": "text/markdown" } });
     const out = await renderPageWithLightpanda(PUBLIC_URL, {
@@ -388,6 +419,20 @@ describe("renderPageWithLightpanda", () => {
     expect(await renderPageWithLightpanda(PUBLIC_URL, { spawn: spawnImpl })).toBe(
       "Failed to render URL: the local renderer returned unreadable output.",
     );
+  });
+});
+
+describe("sameAddress", () => {
+  it("falls back to string comparison when either url cannot be parsed", () => {
+    expect(sameAddress("not a url", "not a url")).toBe(true);
+    expect(sameAddress("not a url", "https://example.com/")).toBe(false);
+    expect(sameAddress("https://example.com/", "not a url")).toBe(false);
+  });
+
+  it("compares the normalized hrefs", () => {
+    expect(sameAddress("https://example.com", "https://example.com/")).toBe(true);
+    expect(sameAddress("https://example.com:443/", "https://example.com/")).toBe(true);
+    expect(sameAddress("https://example.com/page", "https://example.com/page/")).toBe(false);
   });
 });
 
