@@ -63,8 +63,7 @@ describe.skipIf(!enabled || process.platform === "win32")("lightpanda (live)", (
     expect(text.startsWith("Failed to ")).toBe(false);
     expect(text.startsWith("Blocked:")).toBe(false);
     expect(text).toContain("Title: Example Domain");
-    expect(text).toContain("URL: https://example.com/");
-    expect(text).toContain("Rendered via Lightpanda");
+    expect(text).not.toContain("URL:");
     expect(visibleChars(text)).toBeGreaterThan(150);
   }, 150_000);
 

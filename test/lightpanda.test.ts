@@ -135,8 +135,7 @@ describe("automatic renderer installation", () => {
       const out = await pending;
       expect(out).not.toBeNull();
       expect(out).toContain("Readable body text here.");
-      expect(out).toContain("URL: https://example.com/");
-      expect(out).toContain("Rendered via Lightpanda (local browser; nothing sent to a third party).");
+      expect(out).not.toContain("URL:");
     });
   });
 
@@ -204,15 +203,15 @@ describe("renderPageWithLightpanda", () => {
     expect(out).toBeNull();
   });
 
-  it("renders html through the markdown pipeline with provenance", async () => {
+  it("renders html through the markdown pipeline without a url line", async () => {
     const { spawnImpl, calls } = spawnRendering(PUBLIC_PAGE, { url: "https://example.com/page" });
     const out = await renderPageWithLightpanda("https://example.com/page", {
       spawn: spawnImpl,
       timeoutMs: 5000,
     });
     expect(out).not.toBeNull();
-    expect(out?.startsWith("Title: Local\nURL: https://example.com/page\n")).toBe(true);
-    expect(out).toContain("Rendered via Lightpanda (local browser; nothing sent to a third party).");
+    expect(out?.startsWith("Title: Local\n")).toBe(true);
+    expect(out).not.toContain("URL:");
     expect(out).toContain("Readable body text here.");
     expect(out).not.toContain("<html");
     const fetchCall = calls.find((call) => call.args.includes("fetch"));
@@ -227,13 +226,34 @@ describe("renderPageWithLightpanda", () => {
     expect(fetchCall?.args).not.toContain("--block-private-networks");
   });
 
+  it("shows the final url when a render redirects", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE, { url: "https://other.example/landing" });
+    const out = await renderPageWithLightpanda("https://example.com/page", {
+      spawn: spawnImpl,
+      timeoutMs: 5000,
+    });
+    expect(out?.startsWith("URL: https://other.example/landing\nTitle: Local\n")).toBe(true);
+    expect(out?.match(/^URL: /gm)?.length).toBe(1);
+  });
+
+  it("adds no url line for a bare-host input that matches its normalized url", async () => {
+    const { spawnImpl } = spawnRendering(PUBLIC_PAGE, { url: "https://example.com" });
+    const out = await renderPageWithLightpanda("example.com", {
+      spawn: spawnImpl,
+      timeoutMs: 5000,
+    });
+    expect(out?.startsWith("Title: Local")).toBe(true);
+    expect(out).not.toContain("URL:");
+  });
+
   it("returns markdown dumps directly", async () => {
     const { spawnImpl } = spawnRendering("# Doc\n\nBody text.", { headers: { "content-type": "text/markdown" } });
     const out = await renderPageWithLightpanda(PUBLIC_URL, {
       spawn: spawnImpl,
       dump: "markdown",
     });
-    expect(out?.startsWith("URL: https://example.com/\n")).toBe(true);
+    expect(out?.startsWith("# Doc")).toBe(true);
+    expect(out).not.toContain("URL:");
     expect(out).toContain("# Doc\n\nBody text.");
   });
 
@@ -372,7 +392,7 @@ describe("renderPageWithLightpanda", () => {
 });
 
 describe("renderPageHtml", () => {
-  it("returns the raw html dump without conversion or provenance", async () => {
+  it("returns the raw html dump unchanged", async () => {
     const { spawnImpl, calls } = spawnRendering(PUBLIC_PAGE);
     const out = await renderPageHtml("https://example.com/search", { spawn: spawnImpl });
     expect(out).toBe(PUBLIC_PAGE);

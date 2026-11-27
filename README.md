@@ -119,8 +119,8 @@ Use `/search-config` to enable or disable engines; Ecosia and Yahoo are availabl
 - Converts HTML to Markdown with the ported Studio pipeline: `<article>`/`<main>` scoping,
   hidden-element stripping, header link-density stripping, boilerplate removal, and page metadata
   (`Title:`, `Author:`, `Date:`, `Site:`).
-- Adds `URL:` and `Rendered via Lightpanda (local browser; nothing sent to a third party).` to every
-  rendered page.
+- Adds a `URL:` line only when a redirect lands on a different final URL, so the real address of a
+  redirected page stays visible.
 - Local files are read directly (`file://` URLs, absolute paths, `~/`, `./`): HTML is converted,
   text is returned raw, local PDFs are extracted with MuPDF, binary files are rejected. Lightpanda
   itself does not support `file://`, so this is the only non-browser read path.

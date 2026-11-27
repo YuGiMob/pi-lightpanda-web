@@ -17,8 +17,7 @@ const DEFAULT_BINARY = "lightpanda";
 const DEFAULT_WAIT_UNTIL = "networkidle";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 5_000;
-const METADATA_LINE_RE = /^(?:Title|Author|Date|Site|URL|Rendered via): /;
-const PROVENANCE = "Rendered via Lightpanda (local browser; nothing sent to a third party).";
+const METADATA_LINE_RE = /^(?:Title|Author|Date|Site|URL): /;
 const CANCELLED_MESSAGE = "Failed to render URL: cancelled.";
 const TIMED_OUT_MESSAGE = "Failed to render URL: timed out.";
 const NO_TEXT_MESSAGE = "(page returned no readable text)";
@@ -258,13 +257,11 @@ function looksLikeInterstitial(text: string): boolean {
   return INTERSTITIAL_MARKERS.some((marker) => lowered.includes(marker));
 }
 
-function withProvenance(prefixed: string, url: string): string {
-  const lines = prefixed.split("\n");
-  let index = 0;
-  while (index < lines.length && METADATA_LINE_RE.test(lines[index])) index++;
-  const header = [`URL: ${url}`, PROVENANCE];
-  if (index === 0) return `${header.join("\n")}\n\n${prefixed}`;
-  return [...lines.slice(0, index), ...header, ...lines.slice(index)].join("\n");
+function withUrlWhenRedirected(prefixed: string, requestedUrl: string, finalUrl: string): string {
+  if (finalUrl === requestedUrl) return prefixed;
+  const header = `URL: ${finalUrl}`;
+  const startsWithMetadata = METADATA_LINE_RE.test(prefixed.split("\n")[0] ?? "");
+  return startsWithMetadata ? `${header}\n${prefixed}` : `${header}\n\n${prefixed}`;
 }
 
 function bodyChars(text: string): number {
@@ -489,7 +486,7 @@ export async function renderPageWithLightpanda(
       : fetched.raw.trim();
   if (bodyChars(rendered) === 0) return NO_TEXT_MESSAGE;
   if (looksLikeInterstitial(rendered)) return CHALLENGE_MESSAGE;
-  return withProvenance(rendered, fetched.finalUrl);
+  return withUrlWhenRedirected(rendered, normalizeUrlScheme(url), fetched.finalUrl);
 }
 
 export type HtmlRenderOutcome = { ok: true; html: string } | { ok: false; message: string } | null;
